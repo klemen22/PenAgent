@@ -1,3 +1,5 @@
+# TODO: Add token filter for illegal tokens :(
+
 import os
 from dotenv import load_dotenv
 from langchain.agents import create_agent
