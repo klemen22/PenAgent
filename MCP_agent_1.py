@@ -106,11 +106,7 @@ if __name__ == "__main__":
             break
 
         response = agent.invoke(
-            {
-                "messages": [
-                    {"role": "user", "content": "Analyse network 192.168.157.0"}
-                ]
-            },
+            {"messages": [{"role": "user", "content": userInput}]},
         )
 
         print(f"\nInitial output: {response}")
