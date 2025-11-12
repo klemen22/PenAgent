@@ -1,7 +1,6 @@
-# TODO: Add token filter for illegal tokens :(
-
 import os
 from dotenv import load_dotenv
+from MCP_tools.token_filter import filterModel
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from MCP_tools.nmap_tool import nmap_scan
@@ -84,9 +83,7 @@ context = """
         """
 
 agent = create_agent(
-    model=llm,
-    system_prompt=context,
-    tools=[nmap_scan],
+    model=llm, system_prompt=context, tools=[nmap_scan], middleware=[filterModel]
 )
 
 # -------------------------------------------------------------------------------#
