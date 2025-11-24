@@ -1,9 +1,12 @@
 import os
 from dotenv import load_dotenv
 from MCP_tools.token_filter import filterModel
-from langchain.agents import create_agent
+from langchain.agents import create_agent, AgentState
+from langgraph.checkpoint.memory import InMemorySaver
 from langchain_openai import ChatOpenAI
 from MCP_tools.nmap_tool import nmap_scan
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional
 
 load_dotenv()
 # -------------------------------------------------------------------------------#
@@ -23,6 +26,8 @@ llm = ChatOpenAI(
 # -------------------------------------------------------------------------------#
 #                                  Agent setup                                   #
 # -------------------------------------------------------------------------------#
+
+# Intial context
 
 context = """
         You are a network engineer who uses the nmap tool to gather relevant information about a network.
@@ -82,6 +87,38 @@ context = """
         Make your summaries clean and concise (max 20 lines) and at the end give your explanation what have you discovered. Use only the nmap_scan tool.
         """
 
+
+# Agent state schema (aka short term memory setup)
+class CustomAgentState(AgentState):
+    step: int = Field(default=0, description="Current agent step.")
+    # ------------------- host section --------------------
+    discovered_hosts: List[str] = Field(
+        default_factory=list, description="List of found active hosts."
+    )
+    scanned_hosts: List[str] = Field(
+        default_factory=list, description="List of already scanned hosts in detail."
+    )
+    pending_hosts: List[str] = Field(
+        default_factory=list, description="List of pending hosts for detailed scanning."
+    )
+    # ------------------- tool section----------------------
+    last_tool_input: Optional[str] = Field(
+        default=None, description="Last executed tool command."
+    )
+    last_tool_output: Optional[str] = Field(
+        default=None, description="Last tool output."
+    )
+    # ------------------- findings section -----------------
+    findings: List[Dict[str, any]] = Field(
+        default_factory=list,
+        description="A structured findings list gathered through itterations.",
+    )
+    agent_notes: Optional[str] = Field(
+        default_factory=None, description="Additional agent notes or reasoning."
+    )
+
+
+# Create agent
 agent = create_agent(
     model=llm, system_prompt=context, tools=[nmap_scan], middleware=[filterModel]
 )
