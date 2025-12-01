@@ -1,15 +1,21 @@
-from pydantic import BaseModel, Field
-from typing import Dict, Any
-from langchain.tools import tool
+# TODO: implement dynamic context!
+
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Dict, Any, List, Optional
+from langchain.tools import tool, ToolRuntime
 import asyncio
 from dotenv import load_dotenv
-from typing import Literal, Union
 import os
 from .mcp_server import KaliToolsClient, setup_mcp_server
+import re
+
+from langgraph.types import Command
+import json
 
 load_dotenv()
 
 KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.129:5000")
+
 
 # -------------------------------------------------------------------------------#
 #                              NMAP tool implementation                          #
@@ -18,6 +24,9 @@ KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.129:5000")
 
 # pydantic schema
 class nmapInput(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    runtime: ToolRuntime
     target: str = Field(
         ..., description="IP address, hostname or CIDR (npr. 192.168.157.0/24)"
     )
@@ -26,20 +35,6 @@ class nmapInput(BaseModel):
         "", description="Comma-separated ports or ranges (npr. '22,80,443')"
     )
     additional_args: str = Field("", description="Additional nmap args")
-
-
-# tool implementation
-def nmap_implement(
-    target: str, scan_type: str = "-sV", ports: str = "", additional_args: str = ""
-) -> Dict[str, Any]:
-    payload = {
-        "target": target,
-        "scan_type": scan_type,
-        "ports": ports,
-        "additional_args": additional_args,
-    }
-
-    return asyncio.run(toolCall(payload=payload))
 
 
 # async tool call
@@ -56,68 +51,146 @@ async def toolCall(payload):
     response_format="content",
 )
 def nmap_scan(
-    target: str, scan_type: str = "-sV", ports: str = "", additional_args: str = ""
+    runtime: ToolRuntime,
+    target: str,
+    scan_type: str = "-sV",
+    ports: str = "",
+    additional_args: str = "",
 ) -> Dict[str, Any]:
-    return nmap_implement(
-        target=target, scan_type=scan_type, ports=ports, additional_args=additional_args
-    )
 
-
-# -------------------------------------------------------------------------------#
-#                                  Output schemas                                #
-# -------------------------------------------------------------------------------#
-
-
-class networkDiscovery(BaseModel):
-    discovered_hosts: list[str] = Field(description="List of all active IPs.")
-    initial_ports: dict[str, list[str]] = Field(
-        description="Dictionary of active IPs and their matching ports."
-    )
-
-
-class individualHost(BaseModel):
-    host: str = Field(description="Host IP address.")
-    scanned_ports: list[str] = Field(
-        description="List of all scanned ports."
-    )  # keep an eye on this one // maybe its better to save port ranges instead of a whole port list
-    open_ports: list[str] = Field(description="List of discovered open ports.")
-    services: dict[str, str] = Field(description="Discovered active services")
-
-
-class finalReport(BaseModel):
-    summary: str = Field(description="Concise report of discovered hosts and services")
-    selected_hosts: list[str] = Field(
-        description="List of proposed hosts for further scanning."
-    )
-    next_steps: str = Field(
-        description="Recommended next steps based on the acquired knowledge."
-    )
-
-
-# parent schema that will be passed to an agent
-class stepSchema(BaseModel):
-    step_type: Literal["network_discovery", "indivvidual_host_scan", "final_report"] = (
-        Field(description="List of all available step types.")
-    )
-    reason: str = Field("Explanation why this step was taken.")
-    payload: Union[networkDiscovery, individualHost, finalReport]
-    next_action: str = Field("Next determined action based on a current knowledge.")
-
-
-# -------------------------------------------------------------------------------#
-#                                    Debugging                                   #
-# -------------------------------------------------------------------------------#
-
-
-if __name__ == "__main__":
-    # debug: run directly
-    test = {
-        "target": "127.0.0.1",
-        "scan_type": "-sS -sV",
-        "ports": "22,80,443",
-        "additional_args": "",
+    payload = {
+        "target": target,
+        "scan_type": scan_type,
+        "ports": ports,
+        "additional_args": additional_args,
     }
 
-    print("Calling tool implementation directly")
-    out = nmap_implement(**test)
-    print(out)
+    result = asyncio.run(toolCall(payload=payload))
+    updateAgentState(runtime=runtime, payload=payload, result=formatRawOutput(result))
+
+    return result
+
+
+# -------------------------------------------------------------------------------#
+#                                 Custom agent state                             #
+# -------------------------------------------------------------------------------#
+
+
+class customAgentState(BaseModel):
+    discovered_hosts: List[str] = Field(
+        description="A list of discovered hosts that are in queue to be scanned.",
+        default_factory=list,
+    )
+    scanned_hosts: List[str] = Field(
+        description="A list of hosts already scanned in detail.", default_factory=list
+    )
+    pending_hosts: Dict[str, Any] = Field(
+        description="Dictionary with listed hosts for each iterration.",
+        default_factory=dict,
+    )
+    memory: Dict[str, Any] = Field(
+        description="Dictionary with individual hosts and their coresponding facts.",
+        default_factory=dict,
+    )
+
+
+# -------------------------------------------------------------------------------#
+#                                   Memory update                                #
+# -------------------------------------------------------------------------------#
+
+SCAN_STEPS = [
+    "basic_port_sweep",
+    "service_version_detection",
+    "script_analysis",
+    "aggressive_profiling",
+    "focused_rescan",
+]
+
+
+def updateAgentState(
+    runtime: ToolRuntime, payload: Dict[str, Any], result: Dict[str, Any]
+):
+    # initialize fields
+    if "discovered_hosts" not in runtime.state:
+        runtime.state["discovered_hosts"] = []
+    if "scanned_hosts" not in runtime.state:
+        runtime.state["scanned_hosts"] = []
+    if "pending_hosts" not in runtime.state:
+        runtime.state["pending_hosts"] = {}
+    if "memory" not in runtime.state:
+        runtime.state["memory"] = {}
+
+    if result["success"]:
+
+        # I. update discovered hosts
+        outputBlock = result["stdout"].split("Nmap scan report for ")[1:]
+
+        for block in outputBlock:
+            addr = re.match(r"([0-9]{1,3}(?:\.[0-9]{1,3}){3})", block.strip())
+            if addr:
+                ip = addr.group(1)
+                if ip not in runtime.state["discovered_hosts"]:
+                    runtime.state["discovered_hosts"].append(ip)
+
+        # II. update facts in memory
+        targetIP = payload["target"]
+        currentMemory = runtime.state["memory"]
+
+        # create field in agent's memory if not present
+        currentMemory.setdefault(targetIP, {"facts": []})
+        currentMemory[targetIP]["facts"].append(
+            {
+                "notes": f"With the scan of {payload['target']} we've learnt following facts:\n\n{result['stdout']}",
+            }
+        )
+
+        # III. update pending hosts and already scanned hosts
+        if targetIP not in runtime.state["pending_hosts"]:
+            runtime.state["pending_hosts"][targetIP] = {
+                "next_step": 0,
+                "next_step_name": SCAN_STEPS[0],
+                "total_steps": len(SCAN_STEPS),
+            }
+
+        runtime.state["pending_hosts"][targetIP]["next_step"] += 1
+
+        currentStep = runtime.state["pending_hosts"][targetIP]["next_step"]
+        allSteps = runtime.state["pending_hosts"][targetIP]["total_steps"]
+
+        if currentStep >= allSteps:
+            if targetIP not in runtime.state["scanned_hosts"]:
+                runtime.state["scanned_hosts"].append(targetIP)
+                runtime.state["pending_hosts"].pop(targetIP)
+        else:
+            runtime.state["pending_hosts"][targetIP]["next_stape_name"] = SCAN_STEPS[
+                currentStep
+            ]
+
+    # debug for checking agent state in each iterration
+    print(json.dumps(stateDebug(runtime.state), indent=2))
+    return
+
+
+def formatRawOutput(rawInput: Any) -> Dict:
+    # handle tuple, dict and unknown cases
+
+    if isinstance(rawInput, tuple):
+        for item in rawInput:
+            if isinstance(item, dict):
+                if "result" in item and isinstance(item["result"], dict):
+                    return item["result"]
+                return item
+
+    if isinstance(rawInput, dict):
+        return rawInput
+
+    return {"success": False, "error": str(rawInput)}
+
+
+def stateDebug(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "discovered_hosts": state.get("discovered_hosts", []),
+        "scanned_hosts": state.get("scanned_hosts", []),
+        "pending_hosts": state.get("pending_hosts", {}),
+        "memory": state.get("memory", {}),
+    }

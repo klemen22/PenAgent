@@ -1,20 +1,23 @@
 # filter out all unknown / illegal tokens via langchain middleware
-from langchain.agents.middleware import wrap_model_call
+from langchain.agents.middleware import (
+    after_model,
+    AgentState,
+    before_model,
+    wrap_model_call,
+    wrap_tool_call,
+)
 from langchain.messages import AIMessage
-import json
 
-illegalTokens = ["<|constrain|>", "<|thought|>", "<|commentary|>", "<|output|>"]
+illegal_tokens = ["<|constrain|>", "<|thought|>", "<|commentary|>", "<|output|>"]
 
 
-@wrap_model_call
-def filterModel(request, handler):
-    response = handler(request)
-
-    for msg in response.result:
-        if hasattr(msg, "content") and isinstance(msg.content, str):
-            clean_text = msg.content
-            for token in illegalTokens:
-                clean_text = clean_text.replace(token, "")
-            msg.content = clean_text
-
-    return response
+@after_model
+def filterModel(state: AgentState, handler):
+    if "messages" in state:
+        for msg in state["messages"]:
+            if hasattr(msg, "content") and isinstance(msg.content, str):
+                content = msg.content
+                for token in illegal_tokens:
+                    content = content.replace(token, "")
+                msg.content = content
+    return None
