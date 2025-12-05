@@ -48,18 +48,6 @@ BEHAVIOR RULES:
 	* continue with a new CALL_TOOL, or
 	* produce FINAL_ANSWER if all tasks are completed.
 
-SHORT-TERM MEMORY INTEGRATION:
-	Your short-term memory always contains three sections:
-	1. "discovered_hosts" – list of all detected active hosts. This must be empty before you return FINAL_ANSWER.
-	2. "scanned_hosts" – list of hosts that have already been scanned.
-	3. "memory" – a dictionary where you store extracted facts about each host (ports, services, etc).
-
-	To keep memory consistent:
-		* When summarizing tool output, always use clean, plain text, concise and easy to parse.
-		* Include only relevant facts.
-		* Never include raw nmap output.
-		* Do not add fluff, speculation, or markdown.
-
 ERROR HANDLING:
 	- Always prefer retrying before returning FINAL_ANSWER.
 	- If you are not sure how to proceed, return: FINAL_ANSWER: <short explanation of what went wrong>
