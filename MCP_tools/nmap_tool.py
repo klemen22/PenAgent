@@ -21,7 +21,6 @@ KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.129:5000")
 client = KaliToolsClient(server_url=KALI_API)
 mcp = setup_mcp_server(kali_client=client)
 
-
 # -------------------------------------------------------------------------------#
 #                              NMAP tool implementation                          #
 # -------------------------------------------------------------------------------#
@@ -58,5 +57,15 @@ async def nmap_scan(
         "ports": ports,
         "additional_args": additional_args,
     }
+    returnToolCall(mode="write", payload=payload)
     result = await mcp.call_tool(name="nmap_scan", arguments=payload)
     return result
+
+
+async def returnToolCall(mode: str, payload=None):  # very useful stuff lmao
+    savedPayload = {}
+
+    if mode == "write":
+        savedPayload = payload
+    elif mode == "read":
+        return savedPayload

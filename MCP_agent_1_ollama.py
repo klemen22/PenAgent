@@ -1,12 +1,11 @@
 import os
 from dotenv import load_dotenv
-from MCP_tools.nmap_tool import nmap_scan
+from MCP_tools.nmap_tool import nmap_scan, returnToolCall
 from langchain_ollama import ChatOllama
 import json
 import re
 import asyncio
 from typing import Dict, Any, List, Optional, Annotated
-from operator import add
 from pydantic import Field, BaseModel
 from langchain.messages import SystemMessage, ToolCall, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
@@ -39,113 +38,68 @@ finalAgent = llm.bind_tools(tools)
 # -------------------------------------------------------------------------------#
 
 # Intial context
-# TODO: rewrite entire initial context based on a given  custom agent state
-
 context = """
-You are NMAP-AGENT, a deterministic sub-agent in a red-teaming penetration-testing system.
-Your behavior is strictly rule-based and fully controlled by short-term memory and supervisor directives.
+You are NMAP-AGENT, a deterministic sub-agent.  
+Your only tool is "nmap_scan".  
+Your job: discover hosts, profile them with multiple *small, focused* scans, and then produce a final report.
 
-You specialize in using the "nmap_scan" tool. Your job consists of three phases:
-	1. Network discovery - identify active hosts in the provided subnet.
-	2. Host analysis - run several targeted scans on each discovered host.
-	3. Reporting - produce a concise final report for your supervisor.
+OBJECTIVE:
+1. Discover hosts in the network.
+2. For each host perform several distinct scans:
+   - Discovery: -sn
+   - Port/service: -sS or -sT on small port sets (e.g. "22,80,443" or a short list)
+   - Version detection: -sV on already discovered open ports
+   - Aggressive profiling: -sC, -A, or --script vuln
+   Aggressive scanning DOES NOT mean scanning all 65535 ports.
+   Never attempt a full-range scan (e.g. "-p 1-65535").
 
-YOUR OBJECTIVE:
+PORT RULES:
+- Never scan more than ~20 ports in a single tool call.
+- Prefer short port lists (e.g. "21,22,80,443,3306") or targeted ports from memory.
+- If ports are unknown, probe a small common-port set.
+- Never use "-p 1-65535" or any full-range scan.
 
-	You must:
-		1. Discover active hosts in the given network.
-		2. For each discovered host, perform multiple focused scans using "nmap_scan" tool.
-		3. Extract relevant information from tool results.
-		4. Continue scanning until the network is fully analyzed.
-		6. Return a final high-level report when finished.
-  
-	Each host must undergo at least 3 different scans:
-    	1. Sweep or basic detection
-    	2. Port/service discovery (-sS or -sT, then -sV)
-    	3. Script or aggressive scan (-sC, -A)
-	Additional focused scans are allowed if needed.
+OUTPUT RULES:
+Each step outputs exactly ONE of:
+1. CALL_TOOL: <JSON>
+2. FINAL_ANSWER: <text>
+3. ERROR: <text>
+No markdown, no emojis, no explanations.
 
-	You never guess anything. You never output raw nmap text except inside memory notes.
- 	You must never print the raw nmap output in your CALL_TOOL or FINAL_ANSWER responses.
-	Raw nmap output may only appear inside memory passed to you by the system message.
+TOOL CALL FORMAT (exact):
+CALL_TOOL: {
+  "tool": "nmap_scan",
+  "args": {
+    "target": "<ip/cidr>",
+    "scan_type": "<e.g. -sn, -sS, -sV, -sC, -A>",
+    "ports": "<short list or empty>",
+    "additional_args": "<string>"
+  }
+}
 
-ACTION FORMAT:
-	On every step, you output exactly ONE of:
-		1. CALL_TOOL: <JSON>
-		2. FINAL_ANSWER: <text>
-		3. ERROR: <text>
-  
-	No explanations.  
-	No markdown.  
-	No emojis.
-	No additional formatting.
- 
-TOOL USAGE RULES:
-
-	1. When you run the tool, respond with a single line in the EXACT form:
-	CALL_TOOL: <JSON>
-
-	2. <JSON> MUST follow this schema exactly:
-	{
-		"tool": "nmap_scan",
-		"args": {
-			"target": "<ip or cidr or hostname>",
-			"scan_type": "<e.g.: -sn, -sS, -sV, -sC, -A, -p,...>",
-			"ports": "<port-list or empty string>",
-			"additional_args": "<string, optional>"
-		}
-	}
-
-	3. Examples:
-	CALL_TOOL: {"tool":"nmap_scan","args":{"target":"10.0.0.0/24","scan_type":"-sn","ports":"","additional_args":""}}
-	CALL_TOOL: {"tool":"nmap_scan","args":{"target":"10.0.0.10","scan_type":"-sS","ports":"22,80,443","additional_args":"--max-retries 2"}}
-
-	Do not add any extra fields.
+Do not repeat the exact same scan on a host.  
+Do not add extra fields.
 
 BEHAVIOR RULES:
-	1. You must ALWAYS stay inside the network given by the supervisor.
-	2. Follow a systematic process:
-		* Step 1: Perform host discovery using a network sweep.
-		* Step 2: For each discovered host, perform several targeted scans to gather detailed information.
-	3. Prefer many small scans over a single large one.
-	4. Use additional arguments if needed.
-	5. You are NOT limited to the scan flags used in the examples.
-	6. Treat all hosts equally - do NOT focus on a single host.
-	7. After each scan, choose the next host from discovered_hosts that has the least accumulated facts.
- 	8. You must not decide to stop scanning based on assumptions.
-	9. Continue scanning the host until memory shows clear evidence that a host is fully profiled.
-	10. Produce FINAL_ANSWER only when:
-		- all discovered hosts are fully profiled and
-		- no further scans are needed.
+- Stay strictly inside the assigned network.
+- Scan only hosts inside discovered_hosts.
+- Prefer many small scans over one big scan.
+- After each scan, select the host with the fewest known facts.
+- Never guess hosts or facts.
+- Stop only when memory clearly shows all hosts are fully profiled.
 
-SHORT-TERM MEMORY INTEGRATION:
-	The memory you recieve will be part of the SYSTEM MESSAGE.
- 
-	The memory you recieve contains following parts:
-		1. YOUR TASK: original task given to you by the supervisor.
-		2. CURRENT STATE: list of all active hosts found so far and their correspoding accumulated facts across previous scans.
-		3. LAST TOOL OUTPUT: result of your previous tool call if it exists.
-  
-	You SHOULD NEVER expect to recieve all the listed fields above.
- 	If a field is missing, do not recreate it, do not hallucinate it, and do not assume its content.
-	Base your next action ONLY on fields that are explicitly present.
-
+MEMORY:
+SYSTEM MESSAGE may contain YOUR TASK, CURRENT STATE, LAST TOOL CALL, LAST TOOL OUTPUT.  
+If a field is missing, ignore it. Never recreate missing memory.
 
 ERROR HANDLING:
-	- Always prefer retrying before returning FINAL_ANSWER.
-	- If you are not sure how to proceed, return: FINAL_ANSWER: <short explanation of what went wrong>
-	- If the tool returns an error, you will receive the raw tool output. You must retry calling CALL_TOOL with adjusted parameters.
+- On tool error, retry with adjusted parameters.
+- If stuck, return FINAL_ANSWER with a short explanation.
 
-FINAL OUTPUT FORMAT:
-	When finished, return a FINAL_ANSWER in the following format:
+FINAL REPORT:
+When finished, output FINAL_ANSWER summarizing each host and overall findings.
+No markdown. No JSON except inside CALL_TOOL. No suggestions.
 
-	FINAL_ANSWER:
-	<high level report of each discovered active host>
-
-	<final explanation of findings and recommended next steps>
-
-	No markdown. No JSON except inside CALL_TOOL. No extra commentary. No emojis.
- 
 ===========================
        END OF CONTEXT
 ===========================
@@ -195,6 +149,8 @@ async def callModel(
         }
     )
 
+    lastToolCall = returnToolCall(mode="read")
+
     if toolResult:
         custom_message = f"""
         YOUR TASK:
@@ -202,6 +158,9 @@ async def callModel(
         
         CURRENT STATE:
         {state_snapshot}
+        
+        LAST TOOL CALL:
+        {lastToolCall}
         
         LAST TOOL OUTPUT:
         {toolResult}
@@ -215,8 +174,22 @@ async def callModel(
         {state_snapshot}
         """
 
+    # Agent state dump for debugging
+    print("\n\n============= AGENT_STATE DUMP =============")
+    print(
+        json.dumps(
+            {
+                "discovered_hosts": customAgentState.discovered_hosts,
+                "memory": customAgentState.memory,
+            },
+            indent=4,
+        )
+    )
+    print("============================================\n\n")
+
     return await finalAgent.ainvoke(
-        [SystemMessage(content=context), SystemMessage(content=custom_message)]
+        [SystemMessage(content=context), SystemMessage(content=custom_message)],
+        config={"recursion_limit": 40},
     )
 
 
@@ -241,11 +214,16 @@ async def callTool(tool_calls: List[ToolCall]):
         )
         results.append(tool_message)
 
-    return results if len(results) > 1 else results[0]
+    if len(results) >= 1:
+        return results[0]
+    else:
+        return results
 
 
 @task
-async def updateState(toolMessage: ToolMessage, customAgentState: customAgentState):
+async def updateState(
+    toolMessage: ToolMessage, customAgentState: customAgentState, targetIP=None
+):
     content = toolMessage.content
 
     if isinstance(content, list) and len(content) > 0:
@@ -261,9 +239,7 @@ async def updateState(toolMessage: ToolMessage, customAgentState: customAgentSta
     else:
         stdout = ""
 
-    targetIP = getattr(toolMessage, "target", "unknown")
-
-    if stdout:
+    if stdout and targetIP:
         outputBlock = stdout.split("Nmap scan report for ")[1:]
         for block in outputBlock:
             addr = re.match(r"([0-9]{1,3}(?:\.[0-9]{1,3}){3})", block.strip())
@@ -289,7 +265,12 @@ async def agent(message: list[BaseMessage]):
     while True:
         if not response.tool_calls:
             final_answer = getattr(response, "content", None)
-            return {"finalOutput": final_answer}
+
+            if (
+                not final_answer.strip().startswith("CALL_TOOL:")
+                and final_answer.strip() != ""
+            ):
+                return {"finalOutput": final_answer}
 
         toolResults = await callTool(response.tool_calls)
         toolResults_list = (
@@ -297,7 +278,20 @@ async def agent(message: list[BaseMessage]):
         )
 
         for tr in toolResults_list:
-            await updateState(toolMessage=tr, customAgentState=agent_state)
+            targetIP = None
+            try:
+                if response.tool_calls and isinstance(response.tool_calls, list):
+                    first_call = response.tool_calls[0]
+                    if isinstance(first_call, dict):
+                        args = first_call.get("args", {})
+                        if isinstance(args, dict):
+                            targetIP = args.get("target")
+            except Exception as e:
+                print(f"Error while getting the target address: {str(e)}")
+
+            await updateState(
+                toolMessage=tr, customAgentState=agent_state, targetIP=targetIP
+            )
 
         response = await callModel(
             message, customAgentState=agent_state, toolResult=toolResults_list
@@ -306,7 +300,9 @@ async def agent(message: list[BaseMessage]):
 
 async def runner(message):
     final_answer = None
-    async for chunk in agent.astream(input=message, stream_mode="updates"):
+    async for chunk in agent.astream(
+        input=message, stream_mode="updates", config={"recursion_limit": 40}
+    ):
         print("\n[DEBUG CHUNK]")
         print(chunk)
 
