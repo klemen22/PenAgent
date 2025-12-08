@@ -41,7 +41,7 @@ finalAgent = llm.bind_tools(tools)
 context = """
 You are NMAP-AGENT, a deterministic sub-agent.  
 Your only tool is "nmap_scan".  
-Your job: discover hosts, profile them with multiple *small, focused* scans, and then produce a final report.
+Your job: discover hosts, profile them with multiple small, focused scans, and then produce a final report.
 
 OBJECTIVE:
 1. Discover hosts in the network.
@@ -53,8 +53,10 @@ OBJECTIVE:
    Aggressive scanning DOES NOT mean scanning all 65535 ports.
    Never attempt a full-range scan (e.g. "-p 1-65535").
 
+** PORT/SERVICE SCANNING, VERSION DETECTION AND AGGRESSIVE PROFILING ARE MANDATORY FOR EACH HOST **
+
 PORT RULES:
-- Never scan more than ~20 ports in a single tool call.
+- Never scan more than ~100 ports in a single tool call.
 - Prefer short port lists (e.g. "21,22,80,443,3306") or targeted ports from memory.
 - If ports are unknown, probe a small common-port set.
 - Never use "-p 1-65535" or any full-range scan.
@@ -65,6 +67,8 @@ Each step outputs exactly ONE of:
 2. FINAL_ANSWER: <text>
 3. ERROR: <text>
 No markdown, no emojis, no explanations.
+
+DO NOT MAKE ANY OTHER OUTPUTS.
 
 TOOL CALL FORMAT (exact):
 CALL_TOOL: {
@@ -93,11 +97,12 @@ SYSTEM MESSAGE may contain YOUR TASK, CURRENT STATE, LAST TOOL CALL, LAST TOOL O
 If a field is missing, ignore it. Never recreate missing memory.
 
 ERROR HANDLING:
-- On tool error, retry with adjusted parameters.
+- On tool error or tool timeout , retry with adjusted parameters.
 - If stuck, return FINAL_ANSWER with a short explanation.
 
 FINAL REPORT:
-When finished, output FINAL_ANSWER summarizing each host and overall findings.
+When finished, output FINAL_ANSWER SUMMARIZING EACH HOST and overall findings. 
+DO NOT add any other comments, suggestions or questions besides comments about findings.
 No markdown. No JSON except inside CALL_TOOL. No suggestions.
 
 ===========================
@@ -116,8 +121,6 @@ class customAgentState(BaseModel):
     static_context: str = context
 
     system_prompt: Optional[str] = None
-
-    inner_thoughts: Optional[str] = None
 
     discovered_hosts: List[str] = Field(
         description="A list of discovered hosts that are in queue to be scanned.",
@@ -149,7 +152,11 @@ async def callModel(
         }
     )
 
-    lastToolCall = returnToolCall(mode="read")
+    lastToolCall = await returnToolCall(mode="read")
+
+    print("\n" + "=" * 40)  # additional debug stuff
+    print(f"Last tool call:\n{lastToolCall}")
+    print("\n" + "=" * 40)
 
     if toolResult:
         custom_message = f"""
@@ -183,6 +190,7 @@ async def callModel(
                 "memory": customAgentState.memory,
             },
             indent=4,
+            ensure_ascii=False,
         )
     )
     print("============================================\n\n")
@@ -225,20 +233,35 @@ async def updateState(
     toolMessage: ToolMessage, customAgentState: customAgentState, targetIP=None
 ):
     content = toolMessage.content
+    lastToolCall = await returnToolCall(mode="read")
 
     if isinstance(content, list) and len(content) > 0:
         item = content[0]
         if hasattr(item, "text"):
-            stdout = item.text
+            stdoutRaw = item.text
         else:
-            stdout = str(item)
+            stdoutRaw = str(item)
     elif isinstance(content, str):
-        stdout = content
+        stdoutRaw = content
     elif isinstance(content, dict):
-        stdout = content.get("stdout", "")
+        stdoutRaw = content.get("stdout", "")
     else:
-        stdout = ""
+        stdoutRaw = ""
 
+    stdout = stdoutRaw
+
+    textTemp1 = str(stdoutRaw.split("stdout")[1])
+    textTemp2 = textTemp1.split("\\\\n")
+    del textTemp2[-1]
+
+    print("\n" + "=" * 40)
+    print("\nDATA PASSED TO AGENT\n")
+    finalText = "\n".join(textTemp2[2:])
+    finalText = finalText.encode("utf-8").decode("unicode_escape")
+    print(f"Final text:\n{finalText}")
+    print("\n" + "=" * 40)
+
+    # extract ips and update state
     if stdout and targetIP:
         outputBlock = stdout.split("Nmap scan report for ")[1:]
         for block in outputBlock:
@@ -251,7 +274,10 @@ async def updateState(
         customAgentState.memory.setdefault(targetIP, {"facts": []})
         customAgentState.memory[targetIP]["facts"].append(
             {
-                "notes": f"With the scan of {targetIP} we've learnt following facts:\n\n{stdout}"
+                "scan_type": lastToolCall.get("scan_type", ""),
+                "ports": lastToolCall.get("ports", ""),
+                "additional_args": lastToolCall.get("additional_args"),
+                "notes": f"With the scan of {targetIP} we've learnt following facts:\n\n{finalText}",
             }
         )
 

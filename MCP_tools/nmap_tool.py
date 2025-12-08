@@ -1,25 +1,16 @@
-# TODO: implement dynamic context!
-
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Dict, Any, List, Optional
-from langchain.tools import tool, ToolRuntime
-import asyncio
+from typing import Dict, Any
+from langchain.tools import tool
 from dotenv import load_dotenv
 import os
 from .mcp_server import KaliToolsClient, setup_mcp_server
-import re
-from langchain.messages import SystemMessage, ToolCall, ToolMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.runnables import RunnableConfig
-
-import json
 
 load_dotenv()
 
 KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.129:5000")
 client = KaliToolsClient(server_url=KALI_API)
 mcp = setup_mcp_server(kali_client=client)
+savedPayload = {}
 
 # -------------------------------------------------------------------------------#
 #                              NMAP tool implementation                          #
@@ -57,14 +48,13 @@ async def nmap_scan(
         "ports": ports,
         "additional_args": additional_args,
     }
-    returnToolCall(mode="write", payload=payload)
+    await returnToolCall(mode="write", payload=payload)
     result = await mcp.call_tool(name="nmap_scan", arguments=payload)
     return result
 
 
 async def returnToolCall(mode: str, payload=None):  # very useful stuff lmao
-    savedPayload = {}
-
+    global savedPayload
     if mode == "write":
         savedPayload = payload
     elif mode == "read":
