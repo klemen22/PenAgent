@@ -10,6 +10,7 @@ from pydantic import Field, BaseModel
 from langchain.messages import SystemMessage, ToolCall, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
 from langgraph.func import entrypoint, task
+from datetime import datetime
 
 
 load_dotenv()
@@ -25,7 +26,6 @@ llm = ChatOllama(
     temperature=0.2,
     format=None,
 )
-# add ".with_structured_output" at the end
 
 tools = [nmap_scan]
 tools_by_name = {tool.name: tool for tool in tools}
@@ -284,6 +284,7 @@ async def updateState(
 
 @entrypoint()
 async def agent(message: list[BaseMessage]):
+    startTime = int(datetime.now().timestamp())
 
     agent_state = customAgentState()
     response = await callModel(message, customAgentState=agent_state)
@@ -296,7 +297,20 @@ async def agent(message: list[BaseMessage]):
                 not final_answer.strip().startswith("CALL_TOOL:")
                 and final_answer.strip() != ""
             ):
-                return {"finalOutput": final_answer}
+
+                endTime = int(datetime.now().timestamp())
+                result = agentFinalOutput(
+                    agent_finished=True,
+                    final_agent_state={
+                        "agent_memory": {
+                            "discovered_hosts": agent_state["discovered_hosts"],
+                            "scans_performed": agent_state["memory"],
+                        }
+                    },
+                    agent_report=final_answer,
+                    metadata=agentMetadata(task_duration=endTime - startTime),
+                )
+                return {"final_result": result}
 
         toolResults = await callTool(response.tool_calls)
         toolResults_list = (
@@ -324,8 +338,14 @@ async def agent(message: list[BaseMessage]):
         )
 
 
+# -------------------------------------------------------------------------------#
+#                                 Agent runners                                  #
+# -------------------------------------------------------------------------------#
+
+""" ONLF FOR DEBUGGING
 async def runner(message):
     final_answer = None
+    startTime = int(datetime.now().timestamp())
     async for chunk in agent.astream(
         input=message, stream_mode="updates", config={"recursion_limit": 40}
     ):
@@ -343,6 +363,55 @@ async def runner(message):
     if final_answer:
         print("\n\n# FINAL_ANSWER:")
         print(final_answer)
+"""
+
+
+async def agentRunner(message):
+    startTime = int(datetime.now().timestamp())
+
+    response = await agent.ainvoke(input=message, config={"recursion_limit": 40})
+
+    try:
+        if isinstance(response, dict):
+            finalAgentOutput = response.get("final_result")
+        else:
+            finalAgentOutput = getattr(response, "final_result", None)
+
+        if finalAgentOutput:
+            print("\n" + "=" * 80)
+            print("FINAL OUTPUT DEBUG\n\n")
+            print(finalAgentOutput)
+            print("\n" + "=" * 80)
+            return finalAgentOutput
+        else:
+            return "Tool agent didn't return anything!"
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
+
+# -------------------------------------------------------------------------------#
+#                               Output formatting                                #
+# -------------------------------------------------------------------------------#
+class agentMetadata(BaseModel):
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat() + "Z",
+        description="Timestamp of agent completing the task.",
+    )
+    agent: str = "Nmap_agent"
+    task_duration: int = Field(
+        default_factory=int, description=("Time spent doing the task.")
+    )
+
+
+class agentFinalOutput(BaseModel):
+    agent_finished: bool
+    final_agent_state: Dict[str, Any] = Field(
+        default_factory=dict, description="Dump of the final agent state."
+    )
+    agent_report: str = Field(
+        default_factory=str, description="Final report written by the tool agent."
+    )
+    metadata: agentMetadata
 
 
 # -------------------------------------------------------------------------------#
@@ -362,4 +431,4 @@ if __name__ == "__main__":
 
         message = [HumanMessage(content="Analyse network 192.168.157.0")]
 
-        asyncio.run(runner(message=message))
+        asyncio.run(agentRunner(message=message))
