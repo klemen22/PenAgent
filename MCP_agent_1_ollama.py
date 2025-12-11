@@ -303,8 +303,8 @@ async def agent(message: list[BaseMessage]):
                     agent_finished=True,
                     final_agent_state={
                         "agent_memory": {
-                            "discovered_hosts": agent_state["discovered_hosts"],
-                            "scans_performed": agent_state["memory"],
+                            "discovered_hosts": agent_state.discovered_hosts,
+                            "scans_performed": agent_state.memory,
                         }
                     },
                     agent_report=final_answer,
