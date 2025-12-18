@@ -1,11 +1,11 @@
 import os
 from dotenv import load_dotenv
-from MCP_tools.nmap_tool import nmap_scan, returnToolCall
+from nmap_tool import nmap_scan, returnToolCall
 from langchain_ollama import ChatOllama
 import json
 import re
 import asyncio
-from typing import Dict, Any, List, Optional, Annotated
+from typing import Dict, Any, List, Optional
 from pydantic import Field, BaseModel
 from langchain.messages import SystemMessage, ToolCall, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
@@ -41,22 +41,24 @@ finalAgent = llm.bind_tools(tools)
 context = """
 You are NMAP-AGENT, a deterministic sub-agent.  
 Your only tool is "nmap_scan".  
-Your job: discover hosts, profile them with multiple small, focused scans, and then produce a final report.
+Your job: analyze the assigned target, profile hosts with multiple *focused* scans, and then produce a final report.
 
 OBJECTIVE:
-1. Discover hosts in the network.
-2. For each host perform several distinct scans:
-   - Discovery: -sn
-   - Port/service: -sS or -sT on small port sets (e.g. "22,80,443" or a short list)
+1. If the target is a network (CIDR):
+   - Discover live hosts in the network.
+2. If the target is a single host (IP):
+   - Treat the given host as the only scan target.
+3. For each target host perform several distinct scans:
+   - Discovery: -sn (network targets only)
+   - Port/service: -sS or -sT on small to medium port sets (e.g. "22,80,443" or a short list)
    - Version detection: -sV on already discovered open ports
    - Aggressive profiling: -sC, -A, or --script vuln
-   Aggressive scanning DOES NOT mean scanning all 65535 ports.
-   Never attempt a full-range scan (e.g. "-p 1-65535").
 
-** PORT/SERVICE SCANNING, VERSION DETECTION AND AGGRESSIVE PROFILING ARE MANDATORY FOR EACH HOST **
+Aggressive scanning DOES NOT mean scanning all 65535 ports.  
+Never attempt a full-range scan (e.g. "-p 1-65535").
 
 PORT RULES:
-- Never scan more than ~100 ports in a single tool call.
+- Never scan more than ~20 ports in a single tool call.
 - Prefer short port lists (e.g. "21,22,80,443,3306") or targeted ports from memory.
 - If ports are unknown, probe a small common-port set.
 - Never use "-p 1-65535" or any full-range scan.
@@ -66,15 +68,14 @@ Each step outputs exactly ONE of:
 1. CALL_TOOL: <JSON>
 2. FINAL_ANSWER: <text>
 3. ERROR: <text>
-No markdown, no emojis, no explanations.
 
-DO NOT MAKE ANY OTHER OUTPUTS.
+No markdown, no emojis, no explanations.
 
 TOOL CALL FORMAT (exact):
 CALL_TOOL: {
   "tool": "nmap_scan",
   "args": {
-    "target": "<ip/cidr>",
+    "target": "<ip or cidr>",
     "scan_type": "<e.g. -sn, -sS, -sV, -sC, -A>",
     "ports": "<short list or empty>",
     "additional_args": "<string>"
@@ -85,25 +86,25 @@ Do not repeat the exact same scan on a host.
 Do not add extra fields.
 
 BEHAVIOR RULES:
-- Stay strictly inside the assigned network.
+- Stay strictly inside the assigned target scope.
 - Scan only hosts inside discovered_hosts.
+- If the target is a single host and discovered_hosts is empty, initialize it with that host.
 - Prefer many small scans over one big scan.
 - After each scan, select the host with the fewest known facts.
 - Never guess hosts or facts.
-- Stop only when memory clearly shows all hosts are fully profiled.
+- Stop only when memory clearly shows all target hosts are fully profiled.
 
 MEMORY:
 SYSTEM MESSAGE may contain YOUR TASK, CURRENT STATE, LAST TOOL CALL, LAST TOOL OUTPUT.  
 If a field is missing, ignore it. Never recreate missing memory.
 
 ERROR HANDLING:
-- On tool error or tool timeout , retry with adjusted parameters.
+- On tool error, retry with adjusted parameters.
 - If stuck, return FINAL_ANSWER with a short explanation.
 
 FINAL REPORT:
-When finished, output FINAL_ANSWER SUMMARIZING EACH HOST and overall findings. 
-DO NOT add any other comments, suggestions or questions besides comments about findings.
-No markdown. No JSON except inside CALL_TOOL. No suggestions.
+When finished, output FINAL_ANSWER summarizing each host and overall findings.  
+No markdown. No JSON except inside CALL_TOOL.
 
 ===========================
        END OF CONTEXT
@@ -298,17 +299,9 @@ async def agent(message: list[BaseMessage]):
                 and final_answer.strip() != ""
             ):
 
-                endTime = int(datetime.now().timestamp())
                 result = agentFinalOutput(
                     agent_finished=True,
-                    final_agent_state={
-                        "agent_memory": {
-                            "discovered_hosts": agent_state.discovered_hosts,
-                            "scans_performed": agent_state.memory,
-                        }
-                    },
                     agent_report=final_answer,
-                    metadata=agentMetadata(task_duration=endTime - startTime),
                 )
                 return {"final_result": result}
 
@@ -342,10 +335,9 @@ async def agent(message: list[BaseMessage]):
 #                                 Agent runners                                  #
 # -------------------------------------------------------------------------------#
 
-""" ONLF FOR DEBUGGING
+""" ONLY FOR DEBUGGING
 async def runner(message):
     final_answer = None
-    startTime = int(datetime.now().timestamp())
     async for chunk in agent.astream(
         input=message, stream_mode="updates", config={"recursion_limit": 40}
     ):
@@ -367,7 +359,6 @@ async def runner(message):
 
 
 async def agentRunner(message):
-    startTime = int(datetime.now().timestamp())
 
     response = await agent.ainvoke(input=message, config={"recursion_limit": 40})
 
@@ -392,26 +383,13 @@ async def agentRunner(message):
 # -------------------------------------------------------------------------------#
 #                               Output formatting                                #
 # -------------------------------------------------------------------------------#
-class agentMetadata(BaseModel):
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now().isoformat() + "Z",
-        description="Timestamp of agent completing the task.",
-    )
-    agent: str = "Nmap_agent"
-    task_duration: int = Field(
-        default_factory=int, description=("Time spent doing the task.")
-    )
 
 
 class agentFinalOutput(BaseModel):
     agent_finished: bool
-    final_agent_state: Dict[str, Any] = Field(
-        default_factory=dict, description="Dump of the final agent state."
-    )
     agent_report: str = Field(
         default_factory=str, description="Final report written by the tool agent."
     )
-    metadata: agentMetadata
 
 
 # -------------------------------------------------------------------------------#
@@ -429,6 +407,6 @@ if __name__ == "__main__":
             print("Ending...")
             break
 
-        message = [HumanMessage(content="Analyse network 192.168.157.0")]
+        message = [HumanMessage(content=supervisorInput)]
 
         asyncio.run(agentRunner(message=message))
