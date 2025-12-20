@@ -3,13 +3,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Interrupt, RetryPolicy
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-from typing import Literal
 import MCP_tools.nmap_agent_ollama as nmap_agent
 import os
 import uuid
+from datetime import datetime
+from IPython.display import Image, display
 
 
 load_dotenv()
@@ -47,11 +48,17 @@ planner_llm = ChatOllama(
 )
 
 # -------------------------------------------------------------------------------#
-#                                   Context                                      #
+#                                    Rules                                       #
 # -------------------------------------------------------------------------------#
 
-# TODO
-rules = "placeholder"
+globalRules = """
+- Never fabricate hosts, services, vulnerabilities, or findings.
+- Prefer incremental, evidence-driven actions over speculative ones.
+- Prefer trying again before terminating the assessment.
+- Do not escalate to aggressive techniques unless justified by prior findings.
+- Always aim to minimize noise and footprint.
+- Terminate the assessment once the task objectives are clearly satisfied.
+"""
 
 
 # -------------------------------------------------------------------------------#
@@ -72,7 +79,7 @@ class taskState(BaseModel):
 
 class orchestratorState(BaseModel):
     # Task&Context
-    RULES = rules
+    rules: str = globalRules
     task: List[str] = Field(
         default_factory=list,
         description="List of initial tasks provided to orchestrator upon invocation",
@@ -109,26 +116,108 @@ class orchestratorState(BaseModel):
 # - form_output
 
 
-def entryNode(state: orchestratorState):  # entry node
-    if state.next_action == None:
-        return {"next_action": "reason"}
-
-
-def outputNode():  # output building and formatting
+def reportNode(state: orchestratorState, *, config):  # report building and formatting
     # create invoke for formating a final report
-    return
+    debugFunc(node="REPORT NODE - (entry)")
+
+    id = config["configurable"]["user_id"]
+
+    memory = inMemoryStore.search((id, "memories"), limit=20)
+
+    prompt = f"""
+    You are a reporter agent for penetration testing results.
+    
+    Your job is to write a final concise report for a penetration test based on the saved memories provided below.
+    
+    MEMORIES:
+    {memory}
+    
+    Write a concise final report.
+    No markdown.
+    No direct tool outputs.
+    No recommendations or additional commentary unless explicitly asked for.
+    No emojis.
+    """
+
+    agentReport = reasoning_llm.invoke(prompt).content.strip()
+
+    debugFunc(node="REPORT NODE - (exit)")
+    return {"report": agentReport, "finished": True}
+
+
+def outputNode(state: orchestratorState):
+
+    # output exporting for debugging
+    outputDir = "orchestrator_outputs"
+
+    if not os.path.exists(outputDir):
+        os.makedirs(outputDir, exist_ok=True)
+
+    # ------------------------------
+    # report exporting
+    # ------------------------------
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    baseName = f"orchestrator_report_{timestamp}.txt"
+
+    filePath = os.path.join(outputDir, baseName)
+    with open(file=filePath, mode="w", encoding="utf-8") as f:
+        f.write(state.report or "")
+
+    # ------------------------------
+    # agent state exporting
+    # ------------------------------
+
+    baseName = f"orchestrator_state_{timestamp}.json"
+    filePath = os.path.join(outputDir, baseName)
+    with open(file=filePath, mode="w", encoding="utf-8") as f:
+        f.write(state.model_dump_json(indent=2))
+
+    return {}
 
 
 def memoryNode(state: orchestratorState, *, config):  # node for memory
+    debugFunc(node="MEMORY NODE - (entry)")
+
     # node will be used for long term saving
     id = config["configurable"]["user_id"]
 
     # add myb a seperate invoke wehere you ask an agent is it worth saving new facts at all
+    memory = inMemoryStore.search((id, "memories"), limit=10)
 
-    prompt = f"""
-    You are an agent who specializes in making good and concise summaries for long term storing.
+    if not state.tool_result:
+        return {}
+
+    promptDecision = f"""
+    You are a memory agent who decides whether the following information is worth saving into long-term memory.
+    You will be provided with the current task state, the last tool output, and existing memory.
+    Some of the fields below can be empty depending on the situation.
     
-    Write a concise summary based on the following facts listed bellow:
+    CURRENT TASK:
+    {state.current_task}
+    
+    LAST PARSED TOOL OUTPUT:
+    {state.tool_result}
+    
+    EXISTING MEMORIES:
+    {memory}
+    
+    You can ONLY respond with YES or NO!
+    """
+    agentDecision = memory_llm.invoke(promptDecision).content.strip().upper()
+
+    debugFunc(
+        node="MEMORY NODE - (decision)",
+        message=f"Memory agent decision for saving new facts: {agentDecision}",
+    )
+
+    if agentDecision != "YES":
+        return {}
+
+    promptSummary = f"""
+    You are an agent who specializes in writing concise and high-quality summaries for long-term storage.
+    
+    Write a concise summary based on the following facts listed below:
     
     CURRENT STEP:
     {state.current_task}
@@ -137,19 +226,22 @@ def memoryNode(state: orchestratorState, *, config):  # node for memory
     {state.tool_result}
     """
 
-    agentSummary = memory_llm.invoke(prompt)
+    agentSummary = memory_llm.invoke(promptSummary)
 
-    summary = agentSummary.content
+    summary = agentSummary.content.strip()
     if summary:
         memoryNamespace = (id, "memories")
         memoryID = str(uuid.uuid4())
         memory = {"findings": summary}
         inMemoryStore.put(memoryNamespace, memoryID, memory)
 
+    debugFunc(node="MEMORY NODE - (exit & memory dump)", memoryFlag=True)
     return {}
 
 
 def reasoningNode(state: orchestratorState, config):
+    debugFunc(node="REASONING NODE - (entry)")
+
     id = config["configurable"]["user_id"]
     # look at the current situation and decide on 1 of the allowed actions:
     # all available actions:
@@ -159,17 +251,17 @@ def reasoningNode(state: orchestratorState, config):
     # - memory
     # - output
 
-    memory = inMemoryStore.search((id, "findings"), limit=10)
+    memory = inMemoryStore.search((id, "memories"), limit=10)
 
     prompt = f"""
     You are a professional penetration testing agent who uses given tools to perform penetration testing tasks and red teaming scenarios.
-    Your current position is a supervisor who manages penetration test, tool agents and decides what to do next.
+    Your current position is a supervisor who manages a penetration test, tool agents, and decides what to do next.
     
     GIVEN TASK:
     {state.task}
     
-    RULES:
-    {state.RULES}
+    GLOBAL RULES:
+    {state.rules}
     
     MEMORY:
     {memory}
@@ -181,35 +273,42 @@ def reasoningNode(state: orchestratorState, config):
     {state.tool_result}
     
     Based on the given information you MUST decide what to do next. You respond with one word only!
-    Words that can be used: nmap, sqlmap, memory, output. Following words should be used according to bellow described scenarios:
+    Words that can be used: nmap, sqlmap, memory, output. Following words should be used according to the scenarios described below:
     
     I. nmap
-        * "nmap" word should be returned when usage of nmap tool is needed.
+        * "nmap" should be returned when usage of the nmap tool is needed.
         
     II. sqlmap
-        * "sqlmap" word should be returned when useg of sqlmap tool is needed.
+        * "sqlmap" should be returned when usage of the sqlmap tool is needed.
         
     III. memory
-        * "memory" word should be returned when tool results should be added to the memory.
+        * "memory" should be returned when tool results should be added to memory.
     
     IV. output
-        * "output" word should be returned when the task goal was achieved and it't time to form a final report.
+        * "output" should be returned when the task goal was achieved and it's time to form a final report.
     
     ANY OTHER WORDS ARE NOT ALLOWED!
     """
     decision = reasoning_llm.invoke(prompt).content.strip().lower()
 
-    # add fallback
+    debugFunc(
+        node="REASONING NODE - (exit & state dump)",
+        message=f"Reasoning agent decision: {decision}",
+        state=state,
+    )
 
+    # add fallback
     return {"next_action": decision}
 
 
 def plannerNode(state: orchestratorState):
 
+    debugFunc(node="PLANNER NODE - (entry)")
+
     prompt = f"""
     You are a planner agent for a penetration testing agent.
     Your job is to translate an intent into a concrete command for a tool agent.
-    You are making your translation based on the facts listed bellow (facts provided to you can be empty):
+    You make your translation based on the facts listed below (facts provided to you can be empty):
     
     NEW INTENT:
     {state.next_action}
@@ -220,45 +319,59 @@ def plannerNode(state: orchestratorState):
     LAST TOOL OUTPUT:
     {state.tool_result}
     
-    Respond with a SINGLE sentence command for the tool agent. 
-    Your single sentence command should be formed in a plain text with natural language.
+    Respond with a SINGLE sentence command for the tool agent.
+    Your single sentence command should be formed in plain text with natural language.
     
-    DO NOT CREATE MULTI SENTENCES OUTPUT AND DO NOT EXPLAIN!   
+    DO NOT CREATE MULTIPLE SENTENCES AND DO NOT EXPLAIN!
     """
 
-    newCommand = planner_llm.invoke(input=prompt).content.strip()
+    newCommand = planner_llm.invoke(prompt).content.strip()
 
-    return {"current_task": {"command": newCommand}}
+    debugFunc(
+        node="PLANNER NODE - (exit & command)",
+        message=f"Planner node command: {newCommand}",
+    )
+
+    return {
+        "current_task": {
+            **state.current_task.model_dump(),
+            "command": newCommand,
+        }
+    }
 
 
-async def nmapAgent(state: orchestratorState):
+async def nmapAgentNode(state: orchestratorState):
     command = state.current_task.command
     response = await nmap_agent.agentRunner(message=command)
+
+    debugFunc(node="NMAP AGENT NODE - (entry)")
 
     if response.agent_finished:
         return {
             "next_action": "reason",
             "current_task": {
+                **state.current_task.model_dump(),
                 "task": "Nmap scan.",
                 "subagent": "nmap_agent",
                 "status": "Completed.",
             },
-            "tool_result": extractReport(text=response),
+            "tool_result": extractReport(text=response.agent_report),
         }
 
     else:
         return {
             "next_action": "reason",
             "current_task": {
+                **state.current_task.model_dump(),
                 "task": "Nmap scan.",
                 "subagent": "nmap_agent",
                 "status": "Failed to complete the task.",
             },
-            "tool_result": "Agent field to return any information.",
+            "tool_result": "Agent failed to return usable output.",
         }
 
 
-async def sqlmapAgent(state: orchestratorState, command):
+async def sqlmapAgentNode(state: orchestratorState, command):
     # create sqlmapAgent tool first bozo
     return {}
 
@@ -280,18 +393,136 @@ def extractReport(text: str) -> str:
     return text
 
 
+def routingFunction(state: orchestratorState) -> str:
+    print(f"- [ROUTUER] entry")
+
+    if not state.next_action:
+        return "reasoning"
+
+    nextAction = state.next_action.lower()
+
+    print(f"- [ROUTUER] next action: {nextAction}")
+
+    match nextAction:
+        case "nmap":
+            return "nmap"
+        case "sqlmap":
+            return "sqlmap"
+        case "memory":
+            return "memory"
+        case "output":
+            return "output"
+
+    print("- [ROUTER] unknown action, fallback to reasoning")
+    return "reasoning"
+
+
 # -------------------------------------------------------------------------------#
 #                                    Graph                                       #
 # -------------------------------------------------------------------------------#
 
-workflow = StateGraph(orchestratorState)
+if __name__ == "__main__":
+    workflow = StateGraph(orchestratorState)
 
-# add nodes & edges
+    # ----------------------
+    # graph nodes
+    # ----------------------
 
-checkpointer = InMemorySaver()
-inMemoryStore = InMemoryStore()
-graph = workflow.compile(checkpointer=checkpointer, store=inMemoryStore)
+    workflow.add_node("reasoning_node", reasoningNode)
+    workflow.add_node("planner_node", plannerNode)
+    workflow.add_node("nmap_agent_node", nmapAgentNode)
+    workflow.add_node("sqlmap_agent_node", sqlmapAgentNode)
+    workflow.add_node("memory_node", memoryNode)
+    workflow.add_node("report_node", reportNode)
+    workflow.add_node("output_node", outputNode)
+
+    # ----------------------
+    # graph edges
+    # ----------------------
+
+    workflow.add_edge(START, "reasoning_node")
+    workflow.add_conditional_edges(
+        "reasoning_node",
+        routingFunction,
+        {
+            "nmap": "planner_node",
+            "sqlmap": "planner_node",
+            "memory": "memory_node",
+            "output": "report_node",
+            "reasoning": "reasoning_node",
+        },
+    )
+    workflow.add_conditional_edges(
+        "planner_node",
+        routingFunction,
+        {
+            "nmap": "nmap_agent_node",
+            "sqlmap": "sqlmap_agent_node",
+        },
+    )
+    workflow.add_edge("nmap_agent_node", "reasoning_node")
+    workflow.add_edge("sqlmap_agent_node", "reasoning_node")
+    workflow.add_edge("memory_node", "reasoning_node")
+    workflow.add_edge("report_node", "output_node")
+    workflow.add_edge("output_node", END)
+
+    checkpointer = InMemorySaver()
+    inMemoryStore = InMemoryStore()
+    graph = workflow.compile(checkpointer=checkpointer, store=inMemoryStore)
+
+    # display the workflow
+    display(Image(graph.get_graph().draw_mermaid_png()))
+
+    while True:
+        print("\n" + "=" * 80)
+        print("PEN TEST DOMINATOR")
+        print("(Type 'exit' to close the chat)")
+        userInput = input("\n> user: ")
+
+        if userInput.strip().lower() == ["exit", "quit"]:
+            break
+
+        graph.invoke({"task": userInput})
+
+        state = orchestratorState()
+
+        if state.finished:
+            print("\n" + "=" * 80)
+            print("FINAL REPORT")
+            print("\n" + "=" * 80)
+            print(state.report)
+            print("\n" + "=" * 80)
 
 # -------------------------------------------------------------------------------#
-#                                    Main                                        #
+#                                    Debug                                       #
 # -------------------------------------------------------------------------------#
+
+
+def debugFunc(
+    node: str,
+    state: orchestratorState | None = None,
+    message: str | None = None,
+    memoryFlag: bool = False,
+    config=None,
+):
+
+    print("\n" + "-" * 80)
+    print(f"-NODE: {node}")
+
+    if message:
+        print(f"-MESSAGE: {message}")
+
+    if state:
+        print(f"-STATE SNAPSHOT: {state}")
+
+    if memoryFlag and config:
+        id = config["configurable"]["user_id"]
+        memories = inMemoryStore.search((id, "memories"), limit=50)
+        print(f"-LONG TERM MEMORY SNAPSHOT")
+
+        for i, memory in enumerate(memories, 1):
+            print(f"{i}. {memory}")
+
+    print("\n" + "-" * 80)
+
+    return
