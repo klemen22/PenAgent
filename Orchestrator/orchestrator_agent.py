@@ -1,16 +1,28 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Interrupt, RetryPolicy
+from langchain.messages import SystemMessage
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-import MCP_tools.nmap_agent_ollama as nmap_agent
+from MCP_tools import nmap_agent_ollama as nmap_agent
 import os
 import uuid
+import asyncio
 from datetime import datetime
 from IPython.display import Image, display
+
+# from langgraph.store.sqlite import SqliteStore
+# import sqlite3
 
 
 load_dotenv()
@@ -67,7 +79,7 @@ globalRules = """
 class taskState(BaseModel):
     task: str = Field(default_factory=str)
     command: Optional[str] = Field(
-        default_factory=None,
+        default_factory=str,
         description="Command given to tool agent by planner agent.",
     )
     subagent: str = Field(
@@ -80,26 +92,64 @@ class taskState(BaseModel):
 class orchestratorState(BaseModel):
     # Task&Context
     rules: str = globalRules
-    task: List[str] = Field(
-        default_factory=list,
+    task: str = Field(
+        default_factory=str,
         description="List of initial tasks provided to orchestrator upon invocation",
     )
     # Reasoning
     next_action: Optional[str] = Field(
-        default_factory=None,
+        default_factory=str,
         description="Next agent step decided by the reasoning node",
     )
     # Tools
-    current_task: taskState
+    current_task: taskState = Field(
+        default_factory=taskState,
+        description="Current task bein executed by a tool agent.",
+    )
     tool_result: Optional[str] = Field(
-        default_factory=None,
+        default_factory=str,
         description="Written summary of last tool output.",
     )
     # Output
     report: Optional[str] = Field(
-        default_factory=None, description="Written report from orchestrator."
+        default_factory=str, description="Written report from orchestrator."
     )
     finished: bool = False
+
+
+# -------------------------------------------------------------------------------#
+#                                    Debug                                       #
+# -------------------------------------------------------------------------------#
+
+
+def debugFunc(
+    node: str,
+    state: orchestratorState | None = None,
+    message: str | None = None,
+    memoryFlag: bool = False,
+    config=None,
+):
+
+    print("\n" + "-" * 80)
+    print(f"-NODE: {node}")
+
+    if message:
+        print(f"-MESSAGE: {message}")
+
+    if state:
+        print(f"-STATE SNAPSHOT: {state}")
+
+    if memoryFlag and config:
+        id = config["configurable"]["user_id"]
+        memories = memoryStore.search((id, "memories"), limit=50)
+        print(f"-LONG TERM MEMORY SNAPSHOT")
+
+        for i, memory in enumerate(memories, 1):
+            print(f"{i}. {memory}")
+
+    print("\n" + "-" * 80)
+
+    return
 
 
 # -------------------------------------------------------------------------------#
@@ -122,7 +172,7 @@ def reportNode(state: orchestratorState, *, config):  # report building and form
 
     id = config["configurable"]["user_id"]
 
-    memory = inMemoryStore.search((id, "memories"), limit=20)
+    memory = memoryStore.search((id, "memories"), limit=20)
 
     prompt = f"""
     You are a reporter agent for penetration testing results.
@@ -183,7 +233,7 @@ def memoryNode(state: orchestratorState, *, config):  # node for memory
     id = config["configurable"]["user_id"]
 
     # add myb a seperate invoke wehere you ask an agent is it worth saving new facts at all
-    memory = inMemoryStore.search((id, "memories"), limit=10)
+    memory = memoryStore.search((id, "memories"), limit=10)
 
     if not state.tool_result:
         return {}
@@ -233,7 +283,7 @@ def memoryNode(state: orchestratorState, *, config):  # node for memory
         memoryNamespace = (id, "memories")
         memoryID = str(uuid.uuid4())
         memory = {"findings": summary}
-        inMemoryStore.put(memoryNamespace, memoryID, memory)
+        memoryStore.put(memoryNamespace, memoryID, memory)
 
     debugFunc(node="MEMORY NODE - (exit & memory dump)", memoryFlag=True)
     return {}
@@ -251,7 +301,7 @@ def reasoningNode(state: orchestratorState, config):
     # - memory
     # - output
 
-    memory = inMemoryStore.search((id, "memories"), limit=10)
+    memory = memoryStore.search((id, "memories"), limit=10)
 
     prompt = f"""
     You are a professional penetration testing agent who uses given tools to perform penetration testing tasks and red teaming scenarios.
@@ -340,11 +390,15 @@ def plannerNode(state: orchestratorState):
     }
 
 
-async def nmapAgentNode(state: orchestratorState):
+def nmapAgentNode(state: orchestratorState):
     command = state.current_task.command
-    response = await nmap_agent.agentRunner(message=command)
+    message = [SystemMessage(content=command)]
 
-    debugFunc(node="NMAP AGENT NODE - (entry)")
+    debugFunc(
+        node="NMAP AGENT NODE - (entry)", message=f"Command for nmap agent: {message}"
+    )
+
+    response = asyncio.run(nmap_agent.agentRunner(message=message))
 
     if response.agent_finished:
         return {
@@ -423,6 +477,7 @@ def routingFunction(state: orchestratorState) -> str:
 
 if __name__ == "__main__":
     workflow = StateGraph(orchestratorState)
+    SESSION_ID = "default_session"
 
     # ----------------------
     # graph nodes
@@ -466,12 +521,22 @@ if __name__ == "__main__":
     workflow.add_edge("report_node", "output_node")
     workflow.add_edge("output_node", END)
 
+    # checkpointer
     checkpointer = InMemorySaver()
-    inMemoryStore = InMemoryStore()
-    graph = workflow.compile(checkpointer=checkpointer, store=inMemoryStore)
+
+    # database
+    # connection = sqlite3.connect("orchestrator_memory.sqlite")
+    # memoryStore = SqliteStore(conn=connection)
+    # memoryStore.setup()
+
+    # debugging with simple InMemoryStore() later change it to sqlite3
+    memoryStore = InMemoryStore()
+
+    graph = workflow.compile(checkpointer=checkpointer, store=memoryStore)
 
     # display the workflow
-    display(Image(graph.get_graph().draw_mermaid_png()))
+    pngBytes = graph.get_graph().draw_mermaid_png()
+    display(Image(data=pngBytes))
 
     while True:
         print("\n" + "=" * 80)
@@ -482,7 +547,10 @@ if __name__ == "__main__":
         if userInput.strip().lower() == ["exit", "quit"]:
             break
 
-        graph.invoke({"task": userInput})
+        graph.invoke(
+            {"task": userInput},
+            config={"configurable": {"thread_id": SESSION_ID, "user_id": SESSION_ID}},
+        )
 
         state = orchestratorState()
 
@@ -492,37 +560,3 @@ if __name__ == "__main__":
             print("\n" + "=" * 80)
             print(state.report)
             print("\n" + "=" * 80)
-
-# -------------------------------------------------------------------------------#
-#                                    Debug                                       #
-# -------------------------------------------------------------------------------#
-
-
-def debugFunc(
-    node: str,
-    state: orchestratorState | None = None,
-    message: str | None = None,
-    memoryFlag: bool = False,
-    config=None,
-):
-
-    print("\n" + "-" * 80)
-    print(f"-NODE: {node}")
-
-    if message:
-        print(f"-MESSAGE: {message}")
-
-    if state:
-        print(f"-STATE SNAPSHOT: {state}")
-
-    if memoryFlag and config:
-        id = config["configurable"]["user_id"]
-        memories = inMemoryStore.search((id, "memories"), limit=50)
-        print(f"-LONG TERM MEMORY SNAPSHOT")
-
-        for i, memory in enumerate(memories, 1):
-            print(f"{i}. {memory}")
-
-    print("\n" + "-" * 80)
-
-    return

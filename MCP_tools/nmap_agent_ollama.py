@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from nmap_tool import nmap_scan, returnToolCall
+from MCP_tools.nmap_tool import nmap_scan, returnToolCall
 from langchain_ollama import ChatOllama
 import json
 import re
