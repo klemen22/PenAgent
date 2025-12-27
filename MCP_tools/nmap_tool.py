@@ -22,11 +22,11 @@ class nmapInput(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     target: str = Field(
-        ..., description="IP address, hostname or CIDR (npr. 192.168.157.0/24)"
+        ..., description="IP address, hostname or CIDR (ex. 192.168.157.0/24)"
     )
-    scan_type: str = Field("-sV", description="Nmap scan type (npr. -sS -sV)")
+    scan_type: str = Field("-sV", description="Nmap scan type (ex. -sS -sV)")
     ports: str = Field(
-        "", description="Comma-separated ports or ranges (npr. '22,80,443')"
+        "", description="Comma-separated ports or ranges (ex. '22,80,443')"
     )
     additional_args: str = Field("", description="Additional nmap args")
 
