@@ -19,7 +19,6 @@ import os
 import uuid
 import asyncio
 from datetime import datetime
-from IPython.display import Image, display
 
 # from langgraph.store.sqlite import SqliteStore
 # import sqlite3
@@ -536,7 +535,10 @@ if __name__ == "__main__":
 
     # display the workflow
     pngBytes = graph.get_graph().draw_mermaid_png()
-    display(Image(data=pngBytes))
+    pngPath = "orchestrator_graph.png"
+
+    with open(pngPath, "wb") as f:
+        f.write(pngBytes)
 
     while True:
         print("\n" + "=" * 80)
