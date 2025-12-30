@@ -4,10 +4,11 @@ from langchain.tools import tool
 from dotenv import load_dotenv
 import os
 import asyncio
-import json
 
-# from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
-from mcp_server import KaliToolsClient, setup_mcp_server
+try:
+    from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
+except Exception:
+    from mcp_server import KaliToolsClient, setup_mcp_server
 
 load_dotenv()
 

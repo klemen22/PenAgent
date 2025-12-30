@@ -1,16 +1,20 @@
 import os
 from dotenv import load_dotenv
-from MCP_tools.nmap_tool import nmap_scan, returnToolCall
 from langchain_ollama import ChatOllama
 import json
 import re
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from pydantic import Field, BaseModel
 from langchain.messages import SystemMessage, ToolCall, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
 from langgraph.func import entrypoint, task
-from datetime import datetime
+
+# temp solution for importing bullshit when calling this .py file
+try:
+    from MCP_tools.nmap_tool import nmap_scan, returnToolCall
+except Exception:
+    from nmap_tool import nmap_scan, returnToolCall
 
 
 load_dotenv()
@@ -27,11 +31,7 @@ llm = ChatOllama(
     format=None,
 )
 
-tools = [nmap_scan]
-tools_by_name = {tool.name: tool for tool in tools}
-
-finalAgent = llm.bind_tools(tools)
-
+finalAgent = llm.bind_tools([nmap_scan])
 
 # -------------------------------------------------------------------------------#
 #                                  Agent setup                                   #
@@ -119,10 +119,6 @@ No markdown. No JSON except inside CALL_TOOL.
 
 class customAgentState(BaseModel):
 
-    static_context: str = context
-
-    system_prompt: Optional[str] = None
-
     discovered_hosts: List[str] = Field(
         description="A list of discovered hosts that are in queue to be scanned.",
         default_factory=list,
@@ -131,10 +127,6 @@ class customAgentState(BaseModel):
         description="Dictionary with individual hosts and their coresponding facts.",
         default_factory=dict,
     )
-
-
-class outputState(BaseModel):
-    finalOutput: Optional[str] = None
 
 
 # -------------------------------------------------------------------------------#
@@ -204,29 +196,23 @@ async def callModel(
 
 @task
 async def callTool(tool_calls: List[ToolCall]):
-    results = []
+    tool_call = tool_calls[0]
 
-    for tool_call in tool_calls:
-        tool = tools_by_name[tool_call["name"]]
-        try:
-            rawOutput = await tool.arun(tool_call["args"])
-        except Exception as e:
-            rawOutput = {
-                "stdout": "",
-                "stderr": str(e),
-                "success": False,
-                "target": tool_call["args"].get("target", ""),
-            }
+    try:
+        rawOutput = await nmap_scan.arun(tool_call["args"])
+    except Exception as e:
+        rawOutput = {
+            "stdout": "",
+            "stderr": str(e),
+            "success": False,
+            "target": tool_call["args"].get("target", ""),
+        }
 
-        tool_message = ToolMessage(
-            content=rawOutput, name=tool_call["name"], tool_call_id=tool_call["id"]
-        )
-        results.append(tool_message)
-
-    if len(results) >= 1:
-        return results[0]
-    else:
-        return results
+    return ToolMessage(
+        content=rawOutput,
+        name="nmap_scan",
+        tool_call_id=tool_call["id"],
+    )
 
 
 @task
@@ -285,7 +271,6 @@ async def updateState(
 
 @entrypoint()
 async def agent(message: list[BaseMessage]):
-    startTime = int(datetime.now().timestamp())
 
     agent_state = customAgentState()
     response = await callModel(message, customAgentState=agent_state)
@@ -305,29 +290,23 @@ async def agent(message: list[BaseMessage]):
                 )
                 return {"final_result": result}
 
-        toolResults = await callTool(response.tool_calls)
-        toolResults_list = (
-            toolResults if isinstance(toolResults, list) else [toolResults]
+        toolResult = await callTool(response.tool_calls)
+
+        targetIP = None
+        try:
+            args = response.tool_calls[0].get("args", {})
+            targetIP = args.get("target")
+        except Exception:
+            pass
+
+        await updateState(
+            toolMessage=toolResult,
+            customAgentState=agent_state,
+            targetIP=targetIP,
         )
 
-        for tr in toolResults_list:
-            targetIP = None
-            try:
-                if response.tool_calls and isinstance(response.tool_calls, list):
-                    first_call = response.tool_calls[0]
-                    if isinstance(first_call, dict):
-                        args = first_call.get("args", {})
-                        if isinstance(args, dict):
-                            targetIP = args.get("target")
-            except Exception as e:
-                print(f"Error while getting the target address: {str(e)}")
-
-            await updateState(
-                toolMessage=tr, customAgentState=agent_state, targetIP=targetIP
-            )
-
         response = await callModel(
-            message, customAgentState=agent_state, toolResult=toolResults_list
+            message, customAgentState=agent_state, toolResult=toolResult
         )
 
 
@@ -376,6 +355,7 @@ async def agentRunner(message):
             return finalAgentOutput
         else:
             return "Tool agent didn't return anything!"
+
     except Exception as e:
         print(f"Error: {str(e)}")
 

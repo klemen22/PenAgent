@@ -3,7 +3,12 @@ from typing import Dict, Any
 from langchain.tools import tool
 from dotenv import load_dotenv
 import os
-from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
+
+try:
+    from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
+except Exception:
+    from mcp_server import KaliToolsClient, setup_mcp_server
+
 
 load_dotenv()
 
