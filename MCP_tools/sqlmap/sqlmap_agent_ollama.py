@@ -9,12 +9,7 @@ from pydantic import Field, BaseModel
 from langchain.messages import SystemMessage, ToolCall, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
 from langgraph.func import entrypoint, task
-
-# TODO: fix this importing bullshit
-try:
-    from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, returnSqlmapToolCall
-except Exception:
-    from sqlmap_tool import sqlmap_scan, returnSqlmapToolCall
+from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, returnSqlmapToolCall
 
 load_dotenv()
 # -------------------------------------------------------------------------------#
@@ -261,7 +256,6 @@ async def callModel(
         
         CURRENT STATE:
         {state_snapshot}
-        
         """
 
     print("\n\n============= AGENT_STATE DUMP =============")

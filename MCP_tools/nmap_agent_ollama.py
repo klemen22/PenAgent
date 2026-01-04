@@ -222,6 +222,7 @@ async def updateState(
     content = toolMessage.content
     lastToolCall = await returnToolCall(mode="read")
 
+    # TODO: fix this junk
     if isinstance(content, list) and len(content) > 0:
         item = content[0]
         if hasattr(item, "text"):
