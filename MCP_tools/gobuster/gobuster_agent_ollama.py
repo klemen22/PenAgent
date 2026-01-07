@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.func import entrypoint, task
 from MCP_tools.gobuster.gobuster_tool import gobuster_scan, returnGobusterToolCall
 from datetime import datetime
+from collections import Counter
 
 load_dotenv()
 
@@ -38,32 +39,31 @@ finalAgent = llm.bind_tools([gobuster_scan])
 context = """
 You are GOBUSTER-AGENT, a deterministic sub-agent.
 Your only tool is "gobuster_scan".
-Your job: enumerate HTTP endpoints on the assigned target and return structured discovery results.
+Your job is to enumerate HTTP endpoints on the assigned target.
 
 OBJECTIVE:
-1. Receive a single HTTP target (URL).
-2. Enumerate accessible paths, files, and directories using directory enumeration.
-3. Identify:
-   - existing endpoints
+1. Receive exactly one HTTP target (URL).
+2. Perform directory and file enumeration using controlled gobuster scans.
+3. Discover:
+   - existing paths
    - HTTP status codes
    - response sizes
    - redirects
    - directory vs file hints
-4. Return all discovered endpoints as structured memory artifacts.
 
 SCOPE RULES:
 - Operate ONLY on the provided target URL.
-- Never change protocol, host, or port.
-- Never brute-force parameters or forms.
-- Never attempt authentication or login bypass.
-- Enumeration only (no exploitation).
+- Never modify protocol, host, port, or base path.
+- Never brute-force parameters, forms, or credentials.
+- Never attempt authentication, login bypass, or exploitation.
+- Enumeration only.
 
 TOOL USAGE RULES:
 - Use ONLY the "gobuster_scan" tool.
 - Default mode is "dir".
 - Use the default wordlist unless explicitly instructed otherwise.
 - Do NOT invent arguments.
-- Do NOT repeat the exact same tool call with identical arguments.
+- Do NOT repeat an identical tool call.
 
 TOOL CALL FORMAT (exact):
 CALL_TOOL: {
@@ -75,6 +75,28 @@ CALL_TOOL: {
   }
 }
 
+ENUMERATION STRATEGY:
+1. Always begin with ONE baseline directory enumeration run.
+2. After the first successful run, inspect CURRENT STATE memory.
+3. You MAY perform additional scans ONLY if signals exist.
+
+SIGNALS:
+- A discovered endpoint ends with ".php"
+- A discovered endpoint has redirect=true and type=directory
+- Sensitive indicators exist (e.g. ".git", "config", "backup", ".bak")
+
+ALLOWED FOLLOW-UP SCANS:
+Choose at most TWO of the following:
+- Add extensions: "-x php,txt,bak,conf"
+- Force directory handling: "-f"
+- Exclude common noise by status or size if needed
+
+LIMITS:
+- Maximum total tool calls: 3
+- Never recurse into discovered paths
+- Never scan subdirectories individually
+- Never change the target URL
+
 OUTPUT RULES:
 Each response MUST be exactly ONE of:
 1. CALL_TOOL: <JSON>
@@ -82,27 +104,27 @@ Each response MUST be exactly ONE of:
 3. ERROR: <plain text>
 
 No markdown.
-No explanations.
 No emojis.
+No explanations.
 No extra formatting.
 
 BREAK / TERMINATION RULE:
-- When directory enumeration is complete
-- OR when no new meaningful endpoints can be discovered
-- OR after a successful enumeration run
-
-→ Output FINAL_ANSWER with a short confirmation message.
-This will signal the supervisor to stop execution.
+Stop execution and return FINAL_ANSWER when ANY of the following is true:
+- Maximum tool call limit is reached
+- No new meaningful endpoints are discovered
+- No valid signals exist after a scan
+- Enumeration goals are satisfied
 
 IMPORTANT:
 FINAL_ANSWER must be plain text and MUST NOT start with "CALL_TOOL:".
+This output signals the supervisor to stop execution.
 
 BEHAVIOR RULES:
 - Never hallucinate endpoints.
 - Never guess paths.
-- Never summarize results in text — results are stored in memory only.
+- Never summarize results in text.
 - Trust tool output as ground truth.
-- Prefer one clean enumeration run over multiple redundant scans.
+- Re-evaluate memory after each scan before deciding to continue.
 
 MEMORY HANDLING:
 SYSTEM MESSAGE may contain:
@@ -113,20 +135,21 @@ SYSTEM MESSAGE may contain:
 
 If a field is missing, ignore it.
 Never recreate or overwrite memory manually.
-Parsed results will be stored automatically by the system.
 
 ERROR HANDLING:
-- If the tool fails due to wildcard responses or server behavior:
-  - Retry once with adjusted arguments (e.g. exclude status code or size).
-- If failure persists, return ERROR with a short explanation.
+- On tool failure caused by wildcard responses or server behavior:
+  - Retry ONCE with adjusted arguments.
+- If failure persists:
+  - Return ERROR with a short explanation.
 
 FINAL OUTPUT:
-When finished, return:
+When finished, return exactly:
 FINAL_ANSWER: Enumeration completed.
 
 ===========================
        END OF CONTEXT
 ===========================
+
 """
 
 
@@ -187,6 +210,20 @@ async def callModel(
         {state_snapshot}
         """
 
+    # agent state dump
+    print("\n\n============= AGENT_STATE DUMP =============")
+    print(
+        json.dumps(
+            {
+                "target": customAgentState.target,
+                "memory": customAgentState.memory,
+            },
+            indent=4,
+            ensure_ascii=False,
+        )
+    )
+    print("============================================\n\n")
+
     return await finalAgent.ainvoke(
         [SystemMessage(content=context), SystemMessage(content=customMessage)],
         config={"recursion_limit": 40},
@@ -219,7 +256,7 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
         toolSplitLines = toolOutput.content.get("stdout", "")
     else:
         toolContent = toolOutput.content
-        toolSplitLines = toolContent.split("stdout")
+        toolSplitLines = toolContent[0].split("stdout")
 
     toolSplitLinesTemp = toolSplitLines[1].split("\\n")
     metadata = {}
@@ -283,6 +320,16 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
 
         memory["endpoint"].append(endpoint)
 
+        memory["signals"] = {
+            "has_php": any(e["path"].endswith(".php") for e in memory["endpoint"]),
+            "has_redirect_dirs": any(e["redirect"] for e in memory["endpoint"]),
+            "has_sensitive": any(
+                k in e["path"]
+                for e in memory["endpoint"]
+                for k in [".git", "config", "backup", ".bak"]
+            ),
+        }
+
     memory["timestamp"] = datetime.now().isoformat()
     print("\n\n" + "=" * 40 + "\n" + "Final memory data output:\n")
     print(memory)
@@ -308,7 +355,7 @@ async def agent(message: List[BaseMessage]):
     agent_state.target = url
 
     # initial invoke
-    response = await callModel(message, customAgentState=agent_state)
+    response = await callModel(message, customAgentState=agent_state, toolOutput=None)
 
     while True:
         if not response.tool_calls:
@@ -318,7 +365,7 @@ async def agent(message: List[BaseMessage]):
                 and return_answer.strip() != ""
             ):
 
-                return agent_state.memory
+                return formatAgentOutput(agentState=agent_state)
 
         toolOutput = await callTool(response.tool_calls)
 
@@ -348,18 +395,116 @@ def classifyEndpoint(path, status, redirectAddress):
     return "unknown"
 
 
+def formatAgentOutput(agentState):
+    agentOutput = agentFinalOutput()
+
+    agentOutput.target = agentState.target
+    agentMemory = agentState.memory
+
+    # get all endpoints from agent state
+    allEndpoints = []
+    for scan in agentMemory:
+        allEndpoints.extend(scan.get("endpoint", []))
+
+    # deduplicate endpoints
+    cleanedEndpoints = {}
+    for endpoint in allEndpoints:
+        path = endpoint.get("path")
+        if path:
+            cleanedEndpoints[path] = endpoint
+
+    uniqueEndpoints = list(cleanedEndpoints.values())
+
+    agentOutput.summary = createSummary(uniqueEndpoints=uniqueEndpoints)
+    agentOutput.endpoints = uniqueEndpoints
+
+    allSignals = []
+    for scan in agentMemory:
+        allSignals.extend(scan.get("signals", []))
+
+    print("\n\n============= AGENT_SIGNALS DUMP =============")
+    print(f"All signals: {allSignals}")
+    print("\n\n==============================================")
+
+    allSignals = list(dict.fromkeys(allSignals))
+    agentOutput.signals = allSignals
+
+    return agentOutput
+
+
+def createSummary(uniqueEndpoints):
+
+    counter = Counter()
+
+    for endpoint in uniqueEndpoints:
+        endpointType = endpoint.get("type", "unknown")
+        counter[endpointType] += 1
+
+    # you have 3 main types in agent state: directory, file and unknown for everything else
+
+    summary = {
+        "total_unique_endpoints": len(uniqueEndpoints),
+        "directories": counter.get("directory", 0),
+        "files": counter.get("file", 0),
+        "unknown": counter.get("unknown", 0),
+    }
+
+    return summary
+
+
+# ------------------------------------------------------------------------------- #
+#                                 Agent runners                                   #
+# ------------------------------------------------------------------------------- #
+
+
+async def agentRunner(message):
+
+    response = await agent.ainvoke(input=message, config={"recursion_limit": 40})
+
+    if response:
+        print("\n" + "=" * 80)
+        print("FINAL OUTPUT DEBUG\n\n")
+        print(response)
+        print("\n" + "=" * 80)
+    else:
+        return "Tool agent didn't return anything!"
+
+
+# ------------------------------------------------------------------------------- #
+#                               Output formatting                                 #
+# ------------------------------------------------------------------------------- #
+
+
+class agentFinalOutput(BaseModel):
+    agent: str = "gobuster"
+    target: str = Field(
+        default_factory=str, description="Target givin by the orchestrator."
+    )
+    summary: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary containing total number of endpoints, directories and files.",
+    )
+    endpoints: List[str] = Field(
+        default_factory=list, description="List of discovered endpoints."
+    )
+    signals: List[str] = Field(default_factory=list, description="List of signals.")
+
+
 # ------------------------------------------------------------------------------- #
 #                                   Main loop                                     #
 # ------------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
     print("#" + "-" * 10 + "Gobuster_agent_test" + 10 * "-" + "#\n")
-    print("===== Debugging 'updateState' node =====\n")
+    print("type 'exit' to close the conversation\n")
 
-    with open("MCP_tools\gobuster\gobuster_tool_output_example.txt", "r") as f:
-        output = f.read()
+    while True:
+        supervisorInput = input("\n> User: ").strip()
 
-    toolOutput = ToolMessage(content=output, tool_call_id="lmao")
+        if supervisorInput.lower() in ["quit", "exit"]:
+            print("Ending...")
+            break
 
-    agentState = customAgentState()
-    asyncio.run(updateState(toolOutput=toolOutput, customAgentState=agentState))
+        message = [HumanMessage(content=supervisorInput)]
+
+        asyncio.run(agentRunner(message=message))
