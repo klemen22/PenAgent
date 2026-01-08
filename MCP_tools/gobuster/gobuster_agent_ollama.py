@@ -428,6 +428,7 @@ def formatAgentOutput(agentState):
 
     allSignals = list(dict.fromkeys(allSignals))
     agentOutput.signals = allSignals
+    agentOutput.finished = True
 
     return agentOutput
 
@@ -488,6 +489,7 @@ class agentFinalOutput(BaseModel):
         default_factory=list, description="List of discovered endpoints."
     )
     signals: List[str] = Field(default_factory=list, description="List of signals.")
+    finished: bool = False
 
 
 # ------------------------------------------------------------------------------- #

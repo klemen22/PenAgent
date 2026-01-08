@@ -12,9 +12,9 @@ from langgraph.func import entrypoint, task
 
 # temp solution for importing bullshit when calling this .py file
 try:
-    from MCP_tools.nmap_tool import nmap_scan, returnToolCall
+    from MCP_tools.nmap.nmap_tool import nmap_scan, returnToolCall
 except Exception:
-    from nmap_tool import nmap_scan, returnToolCall
+    from MCP_tools.nmap.nmap_tool import nmap_scan, returnToolCall
 
 
 load_dotenv()

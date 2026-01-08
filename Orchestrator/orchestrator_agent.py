@@ -11,10 +11,11 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command, Interrupt, RetryPolicy
 from langchain.messages import SystemMessage
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-from MCP_tools import nmap_agent_ollama as nmap_agent
+from MCP_tools.nmap import nmap_agent_ollama as nmap_agent
+from MCP_tools.gobuster import gobuster_agent_ollama as gobuster_agent
 import os
 import uuid
 import asyncio
@@ -109,6 +110,9 @@ class orchestratorState(BaseModel):
         default_factory=str,
         description="Written summary of last tool output.",
     )
+    raw_tool_result: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Raw tool output for certain tool agents."
+    )
     # Output
     report: Optional[str] = Field(
         default_factory=str, description="Written report from orchestrator."
@@ -159,6 +163,7 @@ def debugFunc(
 # - reason
 # - nmap
 # - sqlmap
+# - gobuster
 # --------------------
 # - store_memory
 # - retrieve_memory
@@ -225,6 +230,33 @@ def outputNode(state: orchestratorState):
     return {}
 
 
+def summaryNode(state: orchestratorState):
+    debugFunc(node="SUMMARY NODE - (entry)")
+
+    toolUsed = state.next_action
+
+    if toolUsed in ["nmap"]:  # add other tools
+        finalToolOutput = extractReport(state.raw_tool_result)
+    else:
+        finalToolOutput = state.raw_tool_result
+
+    promptSummary = f"""
+    You are an agent who specializes in writing concise and high-quality summaries for long-term storage.
+    
+    Write a concise summary based on the following facts listed below:
+    
+    CURRENT STEP:
+    {state.current_task}
+    
+    LAST TOOL OUTPUT:
+    {finalToolOutput}
+    """
+
+    agentSummary = memory_llm.invoke(promptSummary)
+
+    return {"tool_result": agentSummary}
+
+
 def memoryNode(state: orchestratorState, *, config):  # node for memory
     debugFunc(node="MEMORY NODE - (entry)")
 
@@ -263,26 +295,10 @@ def memoryNode(state: orchestratorState, *, config):  # node for memory
     if agentDecision != "YES":
         return {}
 
-    promptSummary = f"""
-    You are an agent who specializes in writing concise and high-quality summaries for long-term storage.
-    
-    Write a concise summary based on the following facts listed below:
-    
-    CURRENT STEP:
-    {state.current_task}
-    
-    LAST PARSED TOOL OUTPUT:
-    {state.tool_result}
-    """
-
-    agentSummary = memory_llm.invoke(promptSummary)
-
-    summary = agentSummary.content.strip()
-    if summary:
-        memoryNamespace = (id, "memories")
-        memoryID = str(uuid.uuid4())
-        memory = {"findings": summary}
-        memoryStore.put(memoryNamespace, memoryID, memory)
+    memoryNamespace = (id, "memories")
+    memoryID = str(uuid.uuid4())
+    memory = {"findings": state.tool_result}
+    memoryStore.put(memoryNamespace, memoryID, memory)
 
     debugFunc(node="MEMORY NODE - (exit & memory dump)", memoryFlag=True)
     return {}
@@ -296,6 +312,7 @@ def reasoningNode(state: orchestratorState, config):
     # all available actions:
     # - nmap
     # - sqlmap
+    # - gobuster
     # --------------------
     # - memory
     # - output
@@ -329,11 +346,14 @@ def reasoningNode(state: orchestratorState, config):
         
     II. sqlmap
         * "sqlmap" should be returned when usage of the sqlmap tool is needed.
-        
-    III. memory
+    
+    III. gobuster
+        * "gobuster" should be returned when usage of the gobuster tool is needed.  
+    
+    IV. memory
         * "memory" should be returned when tool results should be added to memory.
     
-    IV. output
+    V. output
         * "output" should be returned when the task goal was achieved and it's time to form a final report.
     
     ANY OTHER WORDS ARE NOT ALLOWED!
@@ -365,7 +385,7 @@ def plannerNode(state: orchestratorState):
     PREVIOUS TASK:
     {state.task}
     
-    LAST TOOL OUTPUT:
+    LAST PARSED TOOL OUTPUT:
     {state.tool_result}
     
     Respond with a SINGLE sentence command for the tool agent.
@@ -408,7 +428,7 @@ def nmapAgentNode(state: orchestratorState):
                 "subagent": "nmap_agent",
                 "status": "Completed.",
             },
-            "tool_result": extractReport(text=response.agent_report),
+            "raw_tool_result": {"nmap": response.agent_report},
         }
 
     else:
@@ -420,13 +440,48 @@ def nmapAgentNode(state: orchestratorState):
                 "subagent": "nmap_agent",
                 "status": "Failed to complete the task.",
             },
-            "tool_result": "Agent failed to return usable output.",
+            "raw_tool_result": {"nmap": response.agent_report},
         }
 
 
 async def sqlmapAgentNode(state: orchestratorState, command):
-    # create sqlmapAgent tool first bozo
+
     return {}
+
+
+async def gobusterAgentNode(state: orchestratorState, command):
+    command = state.current_task.command
+    message = [SystemMessage(content=command)]
+
+    debugFunc(
+        node="GOBUSTER AGENT NODE - (entry)",
+        message=f"Command for gobuster agent: {message}",
+    )
+
+    response = asyncio.run(gobuster_agent.agentRunner(message=message))
+
+    if response.finished:
+        return {
+            "next_action": "reason",
+            "current_task": {
+                **state.current_task.model_dump(),
+                "task": "Gobuster scan.",
+                "subagent": "gobuster_agent",
+                "status": "Completed.",
+            },
+            "raw_tool_result": {"gobuster": response},
+        }
+    else:
+        return {
+            "next_action": "reason",
+            "current_task": {
+                **state.current_task.model_dump(),
+                "task": "Gobuster scan.",
+                "subagent": "gobuster_agent",
+                "status": "Failed to complete the task.",
+            },
+            "raw_tool_result": {"gobuster": response},
+        }
 
 
 # -------------------------------------------------------------------------------#
@@ -461,6 +516,8 @@ def routingFunction(state: orchestratorState) -> str:
             return "nmap"
         case "sqlmap":
             return "sqlmap"
+        case "gobuster":
+            return "gobuster"
         case "memory":
             return "memory"
         case "output":
@@ -486,6 +543,8 @@ if __name__ == "__main__":
     workflow.add_node("planner_node", plannerNode)
     workflow.add_node("nmap_agent_node", nmapAgentNode)
     workflow.add_node("sqlmap_agent_node", sqlmapAgentNode)
+    workflow.add_node("gobuster_agent_node", gobusterAgentNode)
+    workflow.add_node("summary_node", summaryNode)
     workflow.add_node("memory_node", memoryNode)
     workflow.add_node("report_node", reportNode)
     workflow.add_node("output_node", outputNode)
@@ -501,6 +560,7 @@ if __name__ == "__main__":
         {
             "nmap": "planner_node",
             "sqlmap": "planner_node",
+            "gobuster": "planner_node",
             "memory": "memory_node",
             "output": "report_node",
             "reasoning": "reasoning_node",
@@ -512,10 +572,13 @@ if __name__ == "__main__":
         {
             "nmap": "nmap_agent_node",
             "sqlmap": "sqlmap_agent_node",
+            "gobuster": "gobuster_agent_node",
         },
     )
-    workflow.add_edge("nmap_agent_node", "reasoning_node")
-    workflow.add_edge("sqlmap_agent_node", "reasoning_node")
+    workflow.add_edge("nmap_agent_node", "summary_node")
+    workflow.add_edge("sqlmap_agent_node", "summary_node")
+    workflow.add_edge("gobuster_agent_node", "summary_node")
+    workflow.add_edge("summary_node", "reasoning_node")
     workflow.add_edge("memory_node", "reasoning_node")
     workflow.add_edge("report_node", "output_node")
     workflow.add_edge("output_node", END)

@@ -1,10 +1,9 @@
 import os
 from dotenv import load_dotenv
-from MCP_tools.token_filter import filterModel
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from MCP_tools.nmap_tool import nmap_scan
-from MCP_tools.nmap_tool import customAgentState
+from MCP_tools.nmap.nmap_tool import nmap_scan
+from MCP_tools.nmap.nmap_tool import customAgentState
 
 
 load_dotenv()
