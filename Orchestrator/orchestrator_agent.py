@@ -233,12 +233,11 @@ def outputNode(state: orchestratorState):
 def summaryNode(state: orchestratorState):
     debugFunc(node="SUMMARY NODE - (entry)")
 
-    toolUsed = state.next_action
+    toolUsed = state.current_task.task
 
-    if toolUsed in ["nmap"]:  # add other tools
-        finalToolOutput = extractReport(state.raw_tool_result)
-    else:
-        finalToolOutput = state.raw_tool_result
+    finalToolOutput = prepareToolOutput(
+        tool=toolUsed, rawOutput=state.raw_tool_result.get(toolUsed)
+    )
 
     promptSummary = f"""
     You are an agent who specializes in writing concise and high-quality summaries for long-term storage.
@@ -525,6 +524,41 @@ def routingFunction(state: orchestratorState) -> str:
 
     print("- [ROUTER] unknown action, fallback to reasoning")
     return "reasoning"
+
+
+# double check this function
+def gobusterToText(raw: dict) -> str:
+    if not raw:
+        return ""
+
+    endpoints = raw.get("endpoints", [])
+    summary = raw.get("summary", {})
+
+    interesting = [e for e in endpoints if e.get("status") in [200, 301, 302, 403]]
+
+    lines = [
+        f"Total endpoints: {summary.get('total_unique_endpoints')}",
+        f"Directories: {summary.get('directories')}",
+        f"Files: {summary.get('files')}",
+        "Interesting endpoints:",
+    ]
+
+    for e in interesting[:10]:
+        lines.append(f"- {e['path']} [{e['status']}] ({e['type']})")
+
+    return "\n".join(lines)
+
+
+def prepareToolOutput(tool: str, rawOutput):
+    match tool:
+        case "nmap":
+            return extractReport(text=rawOutput)
+        case "sqlmap":
+            return extractReport(text=rawOutput)
+        case "gobuster":
+            return gobusterToText(text=rawOutput)
+        case _:
+            return rawOutput
 
 
 # -------------------------------------------------------------------------------#
