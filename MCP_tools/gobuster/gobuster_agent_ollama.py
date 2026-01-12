@@ -430,7 +430,7 @@ def formatAgentOutput(agentState):
     agentOutput.signals = allSignals
     agentOutput.finished = True
 
-    return agentOutput
+    return agentOutput.model_dump_json(indent=2)
 
 
 def createSummary(uniqueEndpoints):

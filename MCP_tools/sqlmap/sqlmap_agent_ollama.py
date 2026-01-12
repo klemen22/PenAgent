@@ -192,24 +192,13 @@ DO NOT include mitigation advice.
 # basic structure idea
 class customAgentState(BaseModel):
 
-    target: Optional[str] = Field(
-        default=None, description="Host target given by the orchestrator."
+    endpoints: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Endpoints given by the orchestrator."
     )
-
-    phase: str = Field(default="init", description="Current sqlmap assessment phase.")
-
     memory: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="Dictionary with organized results of previous scans.",
+        description="Dictionary with organized results of sqlmap scans.",
     )
-
-
-# SQLmap assessments phases (state machine):
-#   > Init
-#   > Detect
-#   > Enum
-#   > Extract
-#   > Done
 
 
 # -------------------------------------------------------------------------------#
@@ -360,39 +349,10 @@ async def updateState(toolOutput: BaseMessage, customAgentState: customAgentStat
         }
     )
 
-    addedTag = re.findall(r"TAG:[A-Z_]+", toolSummary)
-
-    if customAgentState.phase == "init":
-        customAgentState.phase = "detect"
-
-    if customAgentState.phase == "detect":
-        if "SIGNAL:INJECTABLE" in addedTag:
-            customAgentState.phase = "enum"
-        elif "SIGNAL:NOT_INJECTABLE" in addedTag:
-            customAgentState.phase = "done"
-
-    elif customAgentState.phase == "enum":
-        customAgentState.phase = "extract"
-
-    elif customAgentState.phase == "extract":
-        if "SIGNAL:DATA_EXTRACTED" in addedTag:
-            customAgentState.phase = "done"
-
 
 @entrypoint()
 async def agent(message: list[BaseMessage]):
     agent_state = customAgentState()
-
-    # get target
-    text = message[-1].content.lower()
-    url_match = re.search(r"https?://[^\s]+", text)
-
-    if url_match:
-        url = url_match.group(0)
-    else:
-        url = "Unknown target."
-
-    agent_state.target = url
 
     # initial invoke
     response = await callModel(message, customAgentState=agent_state)
@@ -427,7 +387,7 @@ async def agent(message: list[BaseMessage]):
 # -------------------------------------------------------------------------------#
 
 
-async def agentRunner(message):
+async def agentRunner(message, endpoints):
     response = await agent.ainvoke(input=message, config={"recursion_limit": 40})
 
     try:

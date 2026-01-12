@@ -1,0 +1,294 @@
+{
+  "agent": "gobuster",
+  "target": "http://192.168.157.133",
+  "summary": {
+    "total_unique_endpoints": 35,
+    "directories": 6,
+    "files": 27,
+    "unknown": 2
+  },
+  "endpoints": [
+    {
+      "path": "/.git/head",
+      "status": 200,
+      "size": 23,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "unknown"
+    },
+    {
+      "path": "/.hta",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htaccess",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htpasswd",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/config",
+      "status": 301,
+      "size": 319,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/config/",
+      "type": "directory"
+    },
+    {
+      "path": "/database",
+      "status": 301,
+      "size": 321,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/database/",
+      "type": "directory"
+    },
+    {
+      "path": "/docs",
+      "status": 301,
+      "size": 317,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/docs/",
+      "type": "directory"
+    },
+    {
+      "path": "/external",
+      "status": 301,
+      "size": 321,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/external/",
+      "type": "directory"
+    },
+    {
+      "path": "/favicon.ico",
+      "status": 200,
+      "size": 1406,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/index.php",
+      "status": 302,
+      "size": 0,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/javascript",
+      "status": 301,
+      "size": 323,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/javascript/",
+      "type": "directory"
+    },
+    {
+      "path": "/php.ini",
+      "status": 200,
+      "size": 154,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/phpinfo.php",
+      "status": 302,
+      "size": 0,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/robots.txt",
+      "status": 200,
+      "size": 25,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/server-status",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "unknown"
+    },
+    {
+      "path": "/tests",
+      "status": 301,
+      "size": 318,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.133/tests/",
+      "type": "directory"
+    },
+    {
+      "path": "/.htaccess.txt",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htaccess.php",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.hta.txt",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.hta.bak",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htaccess.bak",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.hta.php",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.hta.conf",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htaccess.conf",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htpasswd.txt",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htpasswd.php",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htpasswd.bak",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htpasswd.conf",
+      "status": 403,
+      "size": 280,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/about.php",
+      "status": 200,
+      "size": 3987,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/instructions.php",
+      "status": 200,
+      "size": 39350,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/login.php",
+      "status": 200,
+      "size": 1342,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/logout.php",
+      "status": 302,
+      "size": 0,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/security.txt",
+      "status": 200,
+      "size": 151,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/security.php",
+      "status": 302,
+      "size": 0,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/setup.php",
+      "status": 200,
+      "size": 4711,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    }
+  ],
+  "signals": ["has_php", "has_redirect_dirs", "has_sensitive"],
+  "finished": true
+}
