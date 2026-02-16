@@ -20,8 +20,6 @@ mcp = setup_mcp_server(kali_client=client)
 
 savedPayload = {}
 
-# TODO: add origin to attack vectors
-
 # ------------------------------------------------------------------------------- #
 #                                   Attack vector                                 #
 # ------------------------------------------------------------------------------- #
@@ -61,6 +59,7 @@ async def serverHealth():
     return await mcp.call_tool(name="server_health", arguments={})
 
 
+# filter out directories and endpoints with certain http status codes
 def filterEndpoints(goBusterData: dict):
     endpointsData = goBusterData["endpoints"]
     endpointTarget = goBusterData["target"]
@@ -111,6 +110,7 @@ async def runKatana(url):
     return result
 
 
+# fix and parse URLs
 def normalizeURL(url: str):
     parsed = urlparse(url)
     path = parsed.path
@@ -118,6 +118,7 @@ def normalizeURL(url: str):
     return path, queryParams
 
 
+# split and filter out cookies
 def parseCookies(rawCookie: str):
     if not rawCookie or not isinstance(rawCookie, str):
         return {}
@@ -151,6 +152,7 @@ def parseCookies(rawCookie: str):
     return cookies
 
 
+# parse initial katana output and create initial attack vectors
 def parseKatana(katanaOutput) -> List[AttackVector]:
     all_lines = []
     sources = set()
@@ -201,6 +203,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         headers = response.get("headers", {})
         rawCookies = headers.get("Set-Cookie")
         parsedCookies = parseCookies(rawCookies) if rawCookies else {}
+        endpointRedirect = request.get("source")
 
         if response.get("forms"):
             for f in response["forms"]:
@@ -214,7 +217,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                             vector_type="forms",
                             confidence=calculateConfidence("forms", len(params)),
                             cookies=parsedCookies,
-                            origins=[],
+                            origins=[endpointRedirect] if endpointRedirect else [],
                         )
                     )
 
@@ -227,7 +230,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                     vector_type="url_params",
                     confidence=calculateConfidence("url_params", len(queryParams)),
                     cookies=parsedCookies,
-                    origins=[],
+                    origins=[endpointRedirect] if endpointRedirect else [],
                 )
             )
 
@@ -240,13 +243,14 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                     vector_type="xhr_api",
                     confidence=calculateConfidence("xhr_api", len(queryParams)),
                     cookies=parsedCookies,
-                    origins=[],
+                    origins=[endpointRedirect] if endpointRedirect else [],
                 )
             )
 
     return vectors
 
 
+# remove duplicated attack vectores and combine params
 def deduplicateOutput(katanaVectorList) -> List[AttackVector]:
     merged = {}
 
@@ -261,18 +265,31 @@ def deduplicateOutput(katanaVectorList) -> List[AttackVector]:
                 vector_type=vec.vector_type,
                 confidence=vec.confidence,
                 cookies=dict(vec.cookies) if vec.cookies else {},
-                origins=[],
+                origins=set(vec.origins) if vec.origins else set(),
             )
         else:
             existing = merged[key]
+
+            # merge params
             existing.params = list(set(existing.params).union(set(vec.params)))
+
+            # merge confidence
             existing.confidence = max(existing.confidence, vec.confidence)
+
+            # merge origins
+            existing.origins = list(set(existing.origins).union(set(vec.origins)))
 
             if vec.cookies:
                 existing.cookies.update(vec.cookies)
 
     for v in merged.values():
         v.params = sorted(v.params)
+        v.origins = sorted(v.origins)
+
+        # give extra bonus to confidence if the same endpoint is reachable from different origins
+        # TLDR: more origins == larger attack surface
+        exposure = min(len(v.origins), 3)
+        v.confidence += exposure
 
     return list(merged.values())
 
@@ -306,6 +323,7 @@ async def main(payload):
     return allVectors
 
 
+# simple confidence calculator to give priority to better attack vectors
 def calculateConfidence(vectorType: str, paramCount: str):
     score = 0
 
