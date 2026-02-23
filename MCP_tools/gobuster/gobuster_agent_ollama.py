@@ -430,7 +430,7 @@ def formatAgentOutput(agentState):
     agentOutput.signals = allSignals
     agentOutput.finished = True
 
-    return agentOutput.model_dump_json(indent=2)
+    return agentOutput.model_dump()
 
 
 def createSummary(uniqueEndpoints):
@@ -467,6 +467,7 @@ async def agentRunner(message):
         print("FINAL OUTPUT DEBUG\n\n")
         print(response)
         print("\n" + "=" * 80)
+        return response
     else:
         return "Tool agent didn't return anything!"
 
