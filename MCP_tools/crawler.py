@@ -320,7 +320,7 @@ async def main(payload):
         f"\n\nFINAL RESULT:\n\n{json.dumps([v.model_dump() for v in fixedVectors], indent=4)}"
     )
 
-    return allVectors
+    return fixedVectors
 
 
 # simple confidence calculator to give priority to better attack vectors

@@ -1,0 +1,39 @@
+[
+    {
+        "endpoint": "http://192.168.157.133/login.php",
+        "method": "POST",
+        "params": [
+            "Login",
+            "password",
+            "user_token",
+            "username"
+        ],
+        "vector_type": "forms",
+        "confidence": 12,
+        "cookies": {
+            "security": "impossible",
+            "PHPSESSID": "d7d92dbc9c7b70fde0abc599d3fc0941"
+        },
+        "origins": [
+            "http://192.168.157.133/index.php",
+            "http://192.168.157.133/logout.php",
+            "http://192.168.157.133/phpinfo.php",
+            "http://192.168.157.133/security.php"
+        ]
+    },
+    {
+        "endpoint": "http://192.168.157.133/setup.php",
+        "method": "POST",
+        "params": [
+            "create_db",
+            "user_token"
+        ],
+        "vector_type": "forms",
+        "confidence": 10,
+        "cookies": {},
+        "origins": [
+            "http://192.168.157.133/about.php",
+            "http://192.168.157.133/instructions.php"
+        ]
+    }
+]
