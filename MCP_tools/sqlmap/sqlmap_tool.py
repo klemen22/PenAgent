@@ -4,6 +4,7 @@ from langchain.tools import tool
 from dotenv import load_dotenv
 import os
 import asyncio
+from sqlmapOutputParser import sqlmapOutputParser
 
 try:
     from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
@@ -17,7 +18,9 @@ client = KaliToolsClient(server_url=KALI_API)
 mcp = setup_mcp_server(kali_client=client)
 savedPayload = {}
 
-testSqlmapAddr = os.getenv(key="TEST_TARGET", default="http://192.168.157.133")
+testEndpoint = os.getenv(key="TEST_ENDPOINT", default="http://192.168.157.133/")
+testEndpointData = os.getenv(key="TEST_ENDPOINT_DATA", default="")
+
 
 # -------------------------------------------------------------------------------#
 #                             SQLmap tool implementation                         #
@@ -71,14 +74,17 @@ async def sqlmapTest():
 
     result = await sqlmap_scan.ainvoke(
         {
-            "url": testSqlmapAddr,
-            "data": "",
-            "additional_args": "--batch --forms --crawl=2",
+            "url": testEndpoint,
+            "data": testEndpointData,
+            "additional_args": "--batch --level=1 --risk=1",
         }
     )
 
     print("> Raw tool output from MCP:\n")
     print(result)
+
+    print("\n> Parsed tool output from MCP:\n")
+    print(sqlmapOutputParser(result))
 
 
 if __name__ == "__main__":

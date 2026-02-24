@@ -349,6 +349,4 @@ if __name__ == "__main__":
     with open("MCP_tools\\gobuster\\gobuster_final_output_example.json", "r") as f:
         payload = json.load(f)
 
-    filteredOutput = filterEndpoints(goBusterData=payload)
-
     asyncio.run(main(payload=payload))
