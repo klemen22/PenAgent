@@ -13,7 +13,7 @@ load_dotenv()
 #                                       Config                                    #
 # ------------------------------------------------------------------------------- #
 
-KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.129:5000")
+KALI_API = os.getenv(key="KALI_API", default="http://192.168.157.137:5000")
 
 client = KaliToolsClient(server_url=KALI_API)
 mcp = setup_mcp_server(kali_client=client)

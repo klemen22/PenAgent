@@ -90,7 +90,7 @@ BEHAVIOR RULES:
     - Prefer many small iterations over one aggressive scan.
     - Use memory and known facts to avoid redundant scans.
     - STOP only when:
-        * All given attack vectors were tested.
+        * All given attack vectors were tested at least 2 times.
         * No further meaningful scans are possible.
 
 OUTPUT RULES:
@@ -159,16 +159,26 @@ async def callModel(
     customAgentState: customAgentState,
     toolResult=None,
 ):
-    print("placeholder")
 
     lastToolCall = await returnSqlmapToolCall(mode="read")
 
-    currentState = json.dumps({"memory": customAgentState.memory})
+    # currentState = customAgentState.memory
+
+    currentState = json.dumps(
+        {
+            endpoint: [scan.model_dump() for scan in scans]
+            for endpoint, scans in customAgentState.memory.items()
+        },
+        indent=4,
+    )
 
     if toolResult:
         customMessage = f"""
         YOUR TASK:
         Supervisor gave you the following task: {customAgentState.message}
+        
+        ATTACK VECTORS:
+        {customAgentState.attack_vectors}
         
         CURRENT STATE:
         {currentState}
@@ -184,12 +194,23 @@ async def callModel(
         YOUR TASK:
         Supervisor gave you the following task: {customAgentState.message}
         
+        ATTACK VECTORS:
+        {customAgentState.attack_vectors}
+        
         CURRENT STATE:
         {currentState}
         """
 
     print("\n\n============= AGENT_STATE DUMP =============")
-    print(json.dumps({"memory": customAgentState.memory}, indent=4))
+    print(
+        json.dumps(
+            {
+                endpoint: [scan.model_dump() for scan in scans]
+                for endpoint, scans in customAgentState.memory.items()
+            },
+            indent=4,
+        )
+    )
     print("============================================\n\n")
 
     return await finalAgent.ainvoke(
@@ -201,6 +222,10 @@ async def callModel(
 @task
 async def callTool(toolCall: List[ToolCall]):
     tool_call = toolCall[0]
+
+    print("\n\n================ TOOL CALL ================")
+    print(tool_call)
+    print("============================================\n\n")
 
     try:
         rawOutput = await sqlmap_scan.arun(tool_call["args"])
@@ -218,21 +243,46 @@ async def callTool(toolCall: List[ToolCall]):
 
 @task
 async def summarizeToolOutput(toolOutput):
+    print("\n\n============== TOOL OUTPUT ==============")
+    print(toolOutput)
+    print("============================================\n\n")
+
     print("\n> Summarizing tool output...")
+
+    if not toolOutput or toolOutput == "":
+        return ""
 
     filteredOutput = sqlmapOutputParser(toolOutput=toolOutput)
 
     customMessage = f"""
-    Analyze the following filtered SQLMap CLI output.
-    Extract structured findings.
-    
+    You are a SQLMap output interpreter.
+
+    STRICT RULES:
+    - Use ONLY information present in the SQLMap output below.
+    - DO NOT invent URLs.
+    - DO NOT invent parameters.
+    - DO NOT invent payloads.
+    - If output says parameters are NOT injectable, explicitly state: "No injectable parameters found."
+    - If no injection evidence exists, DO NOT claim injection.
+    - If no DBMS is mentioned, do not guess.
+
+    Return result in this exact JSON format:
+
+    {{
+    "injectable": true/false,
+    "reason": "<short explanation using exact sqlmap wording>"
+    }}
+
     SQLMap output:
     {filteredOutput}
     """
 
     result = await summarizerAgent.ainvoke([SystemMessage(content=customMessage)])
 
-    return result
+    print("\n\n================ SUMMARY ================")
+    print(result.content)
+    print("============================================\n\n")
+    return result.content
 
 
 @task
@@ -258,8 +308,10 @@ async def agent(input: agentInput):
     agent_state.attack_vectors = input.endpoints
     agent_state.message = input.message
 
+    print("> Initial agent invoke...")
     response = await callModel(customAgentState=agent_state)
 
+    n = 0
     while True:
         if not response.tool_calls:
             final_answer = getattr(response, "content", None)
@@ -268,15 +320,26 @@ async def agent(input: agentInput):
                 not final_answer.strip().startswith("CALL_TOOL:")
                 and final_answer.strip() != ""
             ):
-                return agent_state.memory
+                return json.dumps(
+                    {
+                        endpoint: [scan.model_dump() for scan in scans]
+                        for endpoint, scans in agent_state.memory.items()
+                    },
+                    indent=4,
+                )
 
         toolResult = await callTool(response.tool_calls)
         toolResultSummary = await summarizeToolOutput(toolResult)
-        await updateState(toolOutput=toolResultSummary, customAgentState=agent_state)
+        await updateState(
+            toolOutputSummary=toolResultSummary, customAgentState=agent_state
+        )
 
+        n += 1
+        print(f"> Agent loop invoke: itteration = {n}")
         response = await callModel(
             customAgentState=agent_state, toolResult=toolResultSummary
         )
+        print(f"> Agent response for itteration = {n}:\n\n{response.tool_calls}")
 
 
 # ------------------------------------------------------------------------------- #
@@ -358,4 +421,8 @@ if __name__ == "__main__":
 
         message = [HumanMessage(content=supervisorInput)]
 
-        asyncio.run(agentRunner(message=message, endpoints=endpoints))
+        result = asyncio.run(agentRunner(message=message, endpoints=endpoints))
+
+        print("\n\n================ RESULT ================")
+        print(result)
+        print("============================================\n\n")
