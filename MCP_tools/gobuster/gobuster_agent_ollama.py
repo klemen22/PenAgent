@@ -12,6 +12,8 @@ from langgraph.func import entrypoint, task
 from MCP_tools.gobuster.gobuster_tool import gobuster_scan, returnGobusterToolCall
 from datetime import datetime
 from collections import Counter
+from MCP_tools.MCP_dvwa_login import dvwa_login
+
 
 load_dotenv()
 
@@ -20,6 +22,8 @@ load_dotenv()
 # ------------------------------------------------------------------------------- #
 
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
+LOGIN_TOGGLE = os.getenv(key="LOGIN_TOGGLE", default=False)
+TEST_TARGET = os.getenv(key="TEST_TARGET", default="http://192.168.157.136")
 
 llm = ChatOllama(
     model="huihui_ai/qwen3-abliterated:8b",
@@ -166,6 +170,10 @@ class customAgentState(BaseModel):
     memory: List[Dict[str, Any]] = Field(
         default_factory=list, description="List with tool results."
     )
+    authenticated: bool = Field(default=False, description="Authentication flag.")
+    cookie: Optional[str] = Field(
+        default="", description="Cookie retrieved from successful login."
+    )
 
 
 # ------------------------------------------------------------------------------- #
@@ -231,11 +239,26 @@ async def callModel(
 
 
 @task
-async def callTool(toolCall: List[ToolCall]):
+async def callTool(toolCall: List[ToolCall], customAgentState: customAgentState):
     tool_call = toolCall[0]
+    args = tool_call["args"]
+
+    """
+    # LOGIN TOGGLE logic
+    if LOGIN_TOGGLE:
+        if not customAgentState.authenticated:
+            cookie = await dvwa_login(baseURL=TEST_TARGET)
+            customAgentState.authenticated = True
+            customAgentState.cookie = cookie
+
+        # inject cookie into additional_args
+        cookie = customAgentState.cookie
+        existing_args = args.get("additional_args", "")
+        args["additional_args"] = f'{existing_args} -H "Cookie: {cookie}"'
+    """
 
     try:
-        rawOutput = await gobuster_scan.arun(tool_call["args"])
+        rawOutput = await gobuster_scan.arun(args)
     except Exception as e:
         rawOutput = {
             "stdout": "",
@@ -251,14 +274,24 @@ async def callTool(toolCall: List[ToolCall]):
 @task
 async def updateState(toolOutput: ToolMessage, customAgentState: customAgentState):
 
-    # TODO: double check this
     if isinstance(toolOutput.content, dict):
         toolSplitLines = toolOutput.content.get("stdout", "")
     else:
         toolContent = toolOutput.content
         toolSplitLines = toolContent[0].split("stdout")
 
-    toolSplitLinesTemp = toolSplitLines[1].split("\\n")
+    if isinstance(toolSplitLines, list) and len(toolSplitLines) > 1:
+        toolSplitLinesTemp = toolSplitLines[1].split("\\n")
+    else:
+        toolSplitLinesTemp = [
+            toolSplitLines if isinstance(toolSplitLines, str) else str(toolSplitLines)
+        ]
+
+    toolSplitLinesTemp = [
+        line
+        for line in toolSplitLinesTemp
+        if line.strip() and not line.startswith("=") and "gobuster" not in line.lower()
+    ]
     metadata = {}
 
     for line in toolSplitLinesTemp:
@@ -270,10 +303,13 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
     enumerateData = {}
     for line in toolSplitLinesTemp:
         line = line.strip("\\")
-
-        if line.startswith("/"):
+        if "(Status:" in line and "(" in line:
             key, value = line.split("(", 1)
-            enumerateData[key.strip().lower()] = f"({value.strip()}"
+            path = key.strip().lower()
+            if not path.startswith("/"):
+                path = "/" + path
+            if path not in enumerateData:
+                enumerateData[path] = f"({value.strip()}"
 
     memory = {}
 
@@ -285,7 +321,6 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
     memory["endpoint"] = []
 
     for key in enumerateData:
-        # /.hta -> key
         endpoint = {}
         value = enumerateData[key]
 
@@ -304,7 +339,6 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
             endpoint["size"] = None
 
         redirect = re.search(r"\[\s*-->\s*(https?://[^\]\s]+)\s*\]", value)
-
         if redirect:
             endpoint["redirect"] = True
             endpoint["redirect_address"] = redirect.group(1)
@@ -320,7 +354,7 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
 
         memory["endpoint"].append(endpoint)
 
-        memory["signals"] = {
+        signals = {
             "has_php": any(e["path"].endswith(".php") for e in memory["endpoint"]),
             "has_redirect_dirs": any(e["redirect"] for e in memory["endpoint"]),
             "has_sensitive": any(
@@ -329,6 +363,7 @@ async def updateState(toolOutput: ToolMessage, customAgentState: customAgentStat
                 for k in [".git", "config", "backup", ".bak"]
             ),
         }
+        memory["signals"] = [k for k, v in signals.items() if v]
 
     memory["timestamp"] = datetime.now().isoformat()
     print("\n\n" + "=" * 40 + "\n" + "Final memory data output:\n")
@@ -367,7 +402,7 @@ async def agent(message: List[BaseMessage]):
 
                 return formatAgentOutput(agentState=agent_state)
 
-        toolOutput = await callTool(response.tool_calls)
+        toolOutput = await callTool(response.tool_calls, customAgentState=agent_state)
 
         await updateState(toolOutput=toolOutput, customAgentState=agent_state)
 
@@ -410,8 +445,11 @@ def formatAgentOutput(agentState):
     cleanedEndpoints = {}
     for endpoint in allEndpoints:
         path = endpoint.get("path")
+        status = endpoint.get("status")
+
         if path:
-            cleanedEndpoints[path] = endpoint
+            key = (path, status)
+            cleanedEndpoints[key] = endpoint
 
     uniqueEndpoints = list(cleanedEndpoints.values())
 
@@ -480,7 +518,7 @@ async def agentRunner(message):
 class agentFinalOutput(BaseModel):
     agent: str = "gobuster"
     target: str = Field(
-        default_factory=str, description="Target givin by the orchestrator."
+        default_factory=str, description="Target given by the orchestrator."
     )
     summary: Dict[str, Any] = Field(
         default_factory=dict,
@@ -497,9 +535,11 @@ class agentFinalOutput(BaseModel):
 #                                   Main loop                                     #
 # ------------------------------------------------------------------------------- #
 
+# for testing
 if __name__ == "__main__":
     print("#" + "-" * 10 + "Gobuster_agent_test" + 10 * "-" + "#\n")
     print("type 'exit' to close the conversation\n")
+    # TEST COMMAND: "Enumerate HTTP endpoints on http://192.168.157.136:8081"
 
     while True:
         supervisorInput = input("\n> User: ").strip()

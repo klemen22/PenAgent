@@ -26,7 +26,7 @@ savedPayload = {}
 
 
 class AttackVector(BaseModel):
-    endpoint: str = Field(default=None, description="Targeted endpoint")
+    endpoint: str = Field(default=None, description="Targeted endpoints.")
     method: str = Field(default=None, description="HTTP method used.")
     params: List[str] = Field(
         default_factory=list, description="Available valid parameters."
@@ -71,7 +71,7 @@ def filterEndpoints(goBusterData: dict):
         status = endpoint["status"]
         endType = endpoint["type"]
 
-        if status >= 400:
+        if status >= 400 and status != 403:
             continue
 
         if endType == "directory" and status in [200, 201, 301, 302]:
@@ -297,7 +297,7 @@ def deduplicateOutput(katanaVectorList) -> List[AttackVector]:
 async def main(payload):
 
     filteredEndOutput = filterEndpoints(goBusterData=payload)
-    endpoints = filteredEndOutput["files"]
+    endpoints = filteredEndOutput["directories"] + filteredEndOutput["files"]
 
     print(f"\n\nEndpoint files:\n\n{endpoints}")
 
@@ -346,7 +346,7 @@ if __name__ == "__main__":
     print("\n" + "-" * 20)
     print("Katana test\n")
 
-    with open("MCP_tools\\gobuster\\gobuster_final_output_example.json", "r") as f:
+    with open("MCP_tools\\gobuster\\gobuster_final_output_example2.json", "r") as f:
         payload = json.load(f)
 
     asyncio.run(main(payload=payload))

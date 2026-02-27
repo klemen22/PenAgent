@@ -1,0 +1,166 @@
+{
+  "agent": "gobuster",
+  "target": "http://192.168.157.136:8081",
+  "summary": {
+    "total_unique_endpoints": 19,
+    "directories": 11,
+    "files": 6,
+    "unknown": 2
+  },
+  "endpoints": [
+    {
+      "path": "/.htpasswd",
+      "status": 403,
+      "size": 282,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.htaccess",
+      "status": 403,
+      "size": 282,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/.hta",
+      "status": 403,
+      "size": 282,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/ajax",
+      "status": 301,
+      "size": 324,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/ajax/",
+      "type": "directory"
+    },
+    {
+      "path": "/classes",
+      "status": 301,
+      "size": 327,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/classes/",
+      "type": "directory"
+    },
+    {
+      "path": "/data",
+      "status": 301,
+      "size": 324,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/data/",
+      "type": "directory"
+    },
+    {
+      "path": "/documentation",
+      "status": 301,
+      "size": 333,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/documentation/",
+      "type": "directory"
+    },
+    {
+      "path": "/images",
+      "status": 301,
+      "size": 326,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/images/",
+      "type": "directory"
+    },
+    {
+      "path": "/includes",
+      "status": 301,
+      "size": 328,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/includes/",
+      "type": "directory"
+    },
+    {
+      "path": "/index.php",
+      "status": 200,
+      "size": 55848,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/javascript",
+      "status": 301,
+      "size": 330,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/javascript/",
+      "type": "directory"
+    },
+    {
+      "path": "/labs",
+      "status": 301,
+      "size": 324,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/labs/",
+      "type": "directory"
+    },
+    {
+      "path": "/passwords",
+      "status": 301,
+      "size": 329,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/passwords/",
+      "type": "directory"
+    },
+    {
+      "path": "/phpinfo.php",
+      "status": 200,
+      "size": 81594,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/robots.txt",
+      "status": 200,
+      "size": 157,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "file"
+    },
+    {
+      "path": "/robots",
+      "status": 200,
+      "size": 157,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "unknown"
+    },
+    {
+      "path": "/server-status",
+      "status": 403,
+      "size": 282,
+      "redirect": false,
+      "redirect_address": null,
+      "type": "unknown"
+    },
+    {
+      "path": "/styles",
+      "status": 301,
+      "size": 326,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/styles/",
+      "type": "directory"
+    },
+    {
+      "path": "/webservices",
+      "status": 301,
+      "size": 331,
+      "redirect": true,
+      "redirect_address": "http://192.168.157.136:8081/webservices/",
+      "type": "directory"
+    }
+  ],
+  "signals": ["has_php", "has_redirect_dirs"],
+  "finished": true
+}

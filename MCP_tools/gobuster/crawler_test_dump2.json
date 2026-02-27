@@ -1,0 +1,190 @@
+[
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/rest/ws-test-connectivity.php",
+    "method": "GET",
+    "params": [],
+    "vector_type": "xhr_api",
+    "confidence": 1,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/rest/ws-dns-lookup.php",
+    "method": "GET",
+    "params": [],
+    "vector_type": "xhr_api",
+    "confidence": 1,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/soap/ws-login.php?wsdl",
+    "method": "GET",
+    "params": [],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/webservices/soap/ws-login.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/soap/ws-test-connectivity.php?wsdl",
+    "method": "GET",
+    "params": [],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": [
+      "http://192.168.157.136:8081/webservices/soap/ws-test-connectivity.php"
+    ]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/rest/ws-user-account.php",
+    "method": "GET",
+    "params": [],
+    "vector_type": "xhr_api",
+    "confidence": 1,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/soap/ws-echo.php?wsdl",
+    "method": "GET",
+    "params": [],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/webservices/soap/ws-echo.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/soap/ws-dns-lookup.php?wsdl",
+    "method": "GET",
+    "params": [],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": [
+      "http://192.168.157.136:8081/webservices/soap/ws-dns-lookup.php"
+    ]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/hints-page-wrapper.php?level1HintIncludeFile=60",
+    "method": "GET",
+    "params": ["level1HintIncludeFile"],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/includes/pop-up-help-context-generator.php?pagename=/var/www/mutillidae/home.php",
+    "method": "GET",
+    "params": ["pagename"],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/webservices/soap/ws-user-account.php?wsdl",
+    "method": "GET",
+    "params": [],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": [
+      "http://192.168.157.136:8081/webservices/soap/ws-user-account.php"
+    ]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=password-generator.php&username=anonymous",
+    "method": "POST",
+    "params": ["cmd", "hosted_button_id", "submit"],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=password-generator.php&username=anonymous",
+    "method": "GET",
+    "params": ["password-generator-php-submit-button"],
+    "vector_type": "forms",
+    "confidence": 9,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=document-viewer.php&PathToDocument=robots.txt",
+    "method": "POST",
+    "params": ["cmd", "hosted_button_id", "submit"],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=document-viewer.php&PathToDocument=robots.txt",
+    "method": "GET",
+    "params": ["PathToDocument", "document-viewer-php-submit-button", "page"],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=login.php",
+    "method": "POST",
+    "params": [
+      "cmd",
+      "hosted_button_id",
+      "login-php-submit-button",
+      "password",
+      "redirectPage",
+      "submit",
+      "username"
+    ],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=home.php&popUpNotificationCode=HPH0",
+    "method": "POST",
+    "params": ["cmd", "hosted_button_id", "submit"],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": ["http://192.168.157.136:8081/index.php"]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/styling.php?page-title=Styling with Mutillidae",
+    "method": "GET",
+    "params": ["page-title"],
+    "vector_type": "url_params",
+    "confidence": 7,
+    "cookies": {},
+    "origins": [
+      "http://192.168.157.136:8081/index.php?page=styling-frame.php&page-to-frame=styling.php%3Fpage-title%3DStyling+with+Mutillidae"
+    ]
+  },
+  {
+    "endpoint": "http://192.168.157.136:8081/index.php?page=login.php&redirectPage=view-user-privilege-level.php",
+    "method": "POST",
+    "params": [
+      "cmd",
+      "hosted_button_id",
+      "login-php-submit-button",
+      "password",
+      "redirectPage",
+      "submit",
+      "username"
+    ],
+    "vector_type": "forms",
+    "confidence": 10,
+    "cookies": {},
+    "origins": [
+      "http://192.168.157.136:8081/index.php?page=view-user-privilege-level.php&iv=6bc24fc1ab650b25b4114e93a98f1eba"
+    ]
+  }
+]
