@@ -1,0 +1,64 @@
+{
+  "detection": {
+    "safe": [
+      { "name": "--level", "type": "int", "range": "1-5", "default": 1 },
+      { "name": "--risk", "type": "int", "range": "1-3", "default": 1 },
+      { "name": "--technique", "type": "string", "default": "BEUSTQ" },
+      { "name": "--string" },
+      { "name": "--regexp" },
+      { "name": "--smart" },
+      { "name": "--text-only" }
+    ],
+    "aggressive": [
+      { "name": "--level=5" },
+      { "name": "--risk=3" },
+      { "name": "--time-sec", "type": "int" },
+      { "name": "--union-cols" },
+      { "name": "--disable-stats" }
+    ]
+  },
+
+  "enumeration": {
+    "safe": [
+      { "name": "--dbs" },
+      { "name": "--tables" },
+      { "name": "--columns" },
+      { "name": "--current-user" },
+      { "name": "--current-db" },
+      { "name": "--banner" }
+    ],
+    "aggressive": [
+      { "name": "--dump" },
+      { "name": "--dump-all" },
+      { "name": "--search" },
+      { "name": "--sql-query" }
+    ]
+  },
+
+  "evasion": [
+    { "name": "--tamper" },
+    { "name": "--random-agent" },
+    { "name": "--skip-waf" },
+    { "name": "--delay" },
+    { "name": "--proxy" },
+    { "name": "--tor" }
+  ],
+
+  "optimization": [
+    { "name": "--threads", "type": "int", "default": 1 },
+    { "name": "--batch" },
+    { "name": "--keep-alive" },
+    { "name": "-o" }
+  ],
+
+  "exploitation": {
+    "high_risk": [
+      { "name": "--os-shell" },
+      { "name": "--os-cmd" },
+      { "name": "--os-pwn" },
+      { "name": "--file-write" },
+      { "name": "--file-read" },
+      { "name": "--priv-esc" }
+    ]
+  }
+}

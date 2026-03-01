@@ -240,8 +240,14 @@ async def callModel(
 
 @task
 async def callTool(toolCall: List[ToolCall], customAgentState: customAgentState):
-    tool_call = toolCall[0]
-    args = tool_call["args"]
+
+    try:
+        tool_call = toolCall[0]
+        args = tool_call["args"]
+
+        print("\nTOOL CALL EXCEPTION\n")
+    except Exception as e:
+        rawOutput = {"stdout": "", "stderr": str(e), "success": False}
 
     """
     # LOGIN TOGGLE logic
