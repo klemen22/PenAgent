@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
 from pydantic import BaseModel, Field
 from typing import List, Dict
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlunparse
 
 load_dotenv()
 
@@ -111,11 +111,26 @@ async def runKatana(url):
 
 
 # fix and parse URLs
+from urllib.parse import urlparse, parse_qs, urlunparse
+
+
 def normalizeURL(url: str):
     parsed = urlparse(url)
-    path = parsed.path
+
+    clean_url = urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            "",  # params
+            "",  # query
+            "",  # fragment
+        )
+    )
+
     queryParams = list(parse_qs(parsed.query).keys())
-    return path, queryParams
+
+    return clean_url, queryParams
 
 
 # split and filter out cookies
@@ -186,6 +201,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
 
             all_lines.append(line)
 
+    # build attack vector
     vectors: List[AttackVector] = []
 
     for line in all_lines:
@@ -199,7 +215,15 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         if not endpoint or endpoint in sources:
             continue
 
+        # normalize url
         path, queryParams = normalizeURL(endpoint)
+
+        # remove empty params
+        queryParams = [p for p in queryParams if p]
+
+        # deduplicate params
+        queryParams = sorted(set(queryParams))
+
         headers = response.get("headers", {})
         rawCookies = headers.get("Set-Cookie")
         parsedCookies = parseCookies(rawCookies) if rawCookies else {}
@@ -208,23 +232,27 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         if response.get("forms"):
             for f in response["forms"]:
                 if isinstance(f, dict) and f.get("parameters"):
-                    params = f.get("parameters", [])
+
+                    formParams = f.get("parameters", [])
+                    formParams = [p for p in formParams if p]
+                    formParams = sorted(set(formParams))
+
                     vectors.append(
                         AttackVector(
-                            endpoint=endpoint,
+                            endpoint=path,
                             method=f.get("method", "POST"),
-                            params=sorted(set(params)),
+                            params=formParams,
                             vector_type="forms",
-                            confidence=calculateConfidence("forms", len(params)),
+                            confidence=calculateConfidence("forms", len(formParams)),
                             cookies=parsedCookies,
                             origins=[endpointRedirect] if endpointRedirect else [],
                         )
                     )
 
-        elif "?" in endpoint:
+        elif queryParams:
             vectors.append(
                 AttackVector(
-                    endpoint=endpoint,
+                    endpoint=path,
                     method=request.get("method"),
                     params=queryParams,
                     vector_type="url_params",
@@ -237,7 +265,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         elif "application/json" in headers.get("Content-Type", ""):
             vectors.append(
                 AttackVector(
-                    endpoint=endpoint,
+                    endpoint=path,
                     method=request.get("method"),
                     params=queryParams,
                     vector_type="xhr_api",

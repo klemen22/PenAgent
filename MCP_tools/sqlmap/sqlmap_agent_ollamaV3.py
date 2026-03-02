@@ -12,7 +12,7 @@ from pathlib import Path
 
 load_dotenv()
 
-from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan
+from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, sqlmapConfig
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -38,7 +38,6 @@ finalAgent = llm.bind_tools([sqlmap_scan])
 # ---------------- Plan ---------------- #
 class agentPlanStep(BaseModel):
     description: str = Field(default="")
-    target_url: str = Field(default="")
     method: Literal["GET", "POST"]
     params: List[str] = Field(default_factory=list)
     phase: Literal["detection", "exploitation"]
@@ -153,11 +152,11 @@ async def planningNode(state: sqlmapAgentState):
     Parameters: {currentMemory.vector_data['params']}
 
     STRICT RULES:
-    1. You MUST create ONE or MORE detection steps.
-    2. Create detection step for EACH parameter in THIS endpoint only.
-    3. Only create exploitation steps AFTER all detection steps.
-    4. Detection phase must come first.
-    5. Phase must be either: "detection" or "exploitation".
+    1. Do NOT construct URLs.
+    2. Do NOT include parameter values.
+    3. Only specify parameter NAMES to test.
+    4. Do NOT include SQL payloads.
+    5. SQLMap performs injection automatically.
     
     IMPORTANT:
     You are working on ONLY this single endpoint.
@@ -244,6 +243,12 @@ async def selectActionNode(state: sqlmapAgentState):
 
     Available sqlmap options:
     {allowedArguments}
+    
+    IMPORTANT:
+    Do NOT modify parameter values.
+    Do NOT inject payloads manually.
+    Always return clean URL with normal parameter values.
+    sqlmap will handle injection automatically.
 
     Decide:
     - which options are appropriate
@@ -300,8 +305,23 @@ async def toolExecutionNode(state: sqlmapAgentState):
         if "tables" in selection.enumeration:
             config_payload["enumerate_tables"] = True
 
+    step = currentMemory.plan[currentMemory.step_index]
+    vector = currentMemory.vector_data
+
+    base_url = vector["endpoint"]
+
+    clean_params = []
+
+    for param in step.params:
+        clean_params.append(f"{param}=1")
+
+    if clean_params:
+        clean_url = f"{base_url}?{'&'.join(clean_params)}"
+    else:
+        clean_url = base_url
+
     tool_payload = {
-        "url": selection.url,
+        "url": clean_url,
         "data": selection.data or "",
         "config": config_payload,
     }
@@ -314,7 +334,11 @@ async def toolExecutionNode(state: sqlmapAgentState):
     log_data(state, str(tool_payload))
 
     try:
-        rawOutput = await sqlmap_scan.ainvoke(tool_payload)
+        rawOutput = await sqlmap_scan(
+            url=tool_payload["url"],
+            data=tool_payload["data"],
+            config=sqlmapConfig(**tool_payload["config"]),
+        )
     except Exception as e:
         rawOutput = {
             "stdout": "",
@@ -550,6 +574,8 @@ async def agentRunner(endpoints):
 
             agentState.vectors_memory[key] = attackVectorMemory(vector_data=vector)
 
+            print(f"[VALID ATTACK VECTOR]:\n\n {vector}")
+
     # agentState.attack_vectors = endpoints
 
     # -------------------------------
@@ -607,7 +633,7 @@ if __name__ == "__main__":
     print("#" + "-" * 10 + "SQLmap_agent_test" + 10 * "-" + "#\n")
     print("type 'exit' to close the conversation\n")
 
-    with open("MCP_tools\gobuster\crawler_test_dump2.json", "r") as f:
+    with open("MCP_tools\gobuster\crawler_test_dump3.json", "r") as f:
         endpoints = json.load(f)
 
     result = asyncio.run(agentRunner(endpoints=endpoints))

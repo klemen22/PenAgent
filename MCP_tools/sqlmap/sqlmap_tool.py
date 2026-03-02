@@ -53,12 +53,12 @@ class sqlmapInput(BaseModel):
     config: sqlmapConfig
 
 
-@tool(
-    args_schema=sqlmapInput,
-    description="Perform SQL injection testing.",
-    response_format="content",
-)
-async def sqlmap_scan(url: str, data: str, config: sqlmapConfig) -> Dict[str, Any]:
+# @tool was removed because of the tool wrapper conflicts
+async def sqlmap_scan(
+    url: str,
+    data: str,
+    config: sqlmapConfig,
+) -> Dict[str, Any]:
 
     additional_args = buildAdditionalArgs(config=config)
 
