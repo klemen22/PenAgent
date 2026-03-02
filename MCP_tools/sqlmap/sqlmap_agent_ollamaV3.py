@@ -81,6 +81,28 @@ class agentFeedback(BaseModel):
 
 
 # ---------------- State ---------------- #
+class attackVectorMemory(BaseModel):
+    vector_data: Dict[str, Any] = Field(
+        default_factory=dict, description="Selected vector from the list."
+    )
+    plan: List[agentPlanStep] = Field(
+        default=[], description="Formulated plan for the given attack vector."
+    )
+    step_index: int = Field(default=0)
+
+    selected_command: Optional[sqlmapToolSelection] = Field(default=None)
+    last_tool_result: Optional[Any] = Field(default=None)
+
+    analysis: Optional[agentFeedback] = Field(
+        default=None, description="Tool output analysis."
+    )
+    confidence: float = Field(
+        default=0.0,
+        description="Confidence factor for deciding if replanning is needed.",
+    )
+    done: bool = Field(default=False)
+
+
 class sqlmapAgentState(BaseModel):
     objective: str = Field(default="", description="Current agent objective.")
 
@@ -89,21 +111,10 @@ class sqlmapAgentState(BaseModel):
         description="Attack vectors list given by the orchestrator.",
     )
 
-    plan: List[agentPlanStep] = Field(
-        default=[], description="Current formulated plan step by step."
-    )
-    step_index: int = Field(default=0, description="Current step in formulated plan.")
+    vector_index: int = Field(default=0)
 
-    selected_command: Optional[sqlmapToolSelection] = Field(default=None)
+    vectors_memory: Dict[str, attackVectorMemory] = Field(default_factory=dict)
 
-    last_tool_result: Optional[Any] = Field(
-        default=None, description="Summary of last tool result."
-    )
-    analysis: Optional[agentFeedback] = Field(
-        default=None, description="Analysis of last tool output."
-    )
-
-    confidence: float = Field(default=0.0, description="Confidence factor.")
     iteration: int = Field(default=0)
     max_iteration: int = Field(default=50)
 
@@ -120,6 +131,14 @@ class sqlmapAgentState(BaseModel):
 
 async def planningNode(state: sqlmapAgentState):
 
+    if state.vector_index >= len(state.attack_vectors):
+        return {"decision": "stop"}
+
+    currentMemory = getCurrentVector(state=state)
+
+    if currentMemory.plan and state.decision != "replan":
+        return {"decision": "continue"}
+
     print("\n[PLANNING]\n")
 
     prompt = f"""
@@ -128,16 +147,22 @@ async def planningNode(state: sqlmapAgentState):
     Objective:
     {state.objective}
 
-    Attack vectors:
-    {state.attack_vectors}
+    Attack vector:
+    Endpoint: {currentMemory.vector_data['endpoint']}
+    Method: {currentMemory.vector_data['method']}
+    Parameters: {currentMemory.vector_data['params']}
 
     STRICT RULES:
-    1. You MUST create exactly ONE detection step per attack vector that has parameters.
-    2. Every attack vector with parameters must appear in the plan.
-    3. Do NOT skip endpoints.
-    4. Only create exploitation steps AFTER all detection steps.
-    5. Detection phase must come first for ALL endpoints.
-    6. Phase must be either: "detection" or "exploitation".
+    1. You MUST create ONE or MORE detection steps.
+    2. Create detection step for EACH parameter in THIS endpoint only.
+    3. Only create exploitation steps AFTER all detection steps.
+    4. Detection phase must come first.
+    5. Phase must be either: "detection" or "exploitation".
+    
+    IMPORTANT:
+    You are working on ONLY this single endpoint.
+    Do NOT consider any other endpoints.
+    Do NOT reference other attack vectors.
 
     Return JSON:
     - reasoning
@@ -163,12 +188,10 @@ async def planningNode(state: sqlmapAgentState):
             log_data(state, "[PLANNING]")
             log_data(state, outputPlan.reasoning)
 
-            return {
-                "plan": outputPlan.steps,
-                "step_index": 0,
-                "decision": None,
-                "agent_log": state.agent_log,
-            }
+            currentMemory.plan = outputPlan.steps
+            currentMemory.step_index = 0
+
+            return {"vectors_memory": state.vectors_memory, "decision": "continue"}
 
         except Exception as e:
 
@@ -181,11 +204,11 @@ async def planningNode(state: sqlmapAgentState):
             prompt += "\n\nWARNING: Your previous output was not valid JSON. Return ONLY raw JSON. No explanations."
 
     log_data(state, "Planning failed after retries.")
-    return {
-        "plan": [],
-        "decision": "stop",
-        "agent_log": state.agent_log,
-    }
+
+    currentMemory.plan = []
+    currentMemory.step_index = 0
+
+    return {"vectors_memory": state.vectors_memory, "decision": "stop"}
 
 
 async def selectActionNode(state: sqlmapAgentState):
@@ -193,22 +216,31 @@ async def selectActionNode(state: sqlmapAgentState):
     with open("MCP_tools\sqlmap\sqlmap_allowed_arguments.json") as f:
         allowedArguments = f.read()
 
+    currentMemory = getCurrentVector(state=state)
+    vector = currentMemory.vector_data
+
     print("\n[SELECT_ACTION]\n")
 
-    if state.step_index >= len(state.plan):
-        print("Plan exhausted -> replan")
+    if currentMemory.step_index >= len(currentMemory.plan):
         return {"decision": "replan"}
 
-    step = state.plan[state.step_index]
+    step = currentMemory.plan[currentMemory.step_index]
 
     prompt = f"""
     Objective: {state.objective}
 
-    Current step:
-    {step.description}
+    Current attack vector:
+    Endpoint: {currentMemory.vector_data['endpoint']}
+    Method: {currentMemory.vector_data['method']}
+    Parameters: {currentMemory.vector_data['params']}
 
-    Attack vectors:
-    {state.attack_vectors}
+    Current plan step:
+    Description: {step.description}
+    Phase: {step.phase}
+    Parameters under test: {step.params}
+
+    Previous analysis:
+    {currentMemory.analysis.reasoning if currentMemory.analysis else "None"}
 
     Available sqlmap options:
     {allowedArguments}
@@ -233,63 +265,53 @@ async def selectActionNode(state: sqlmapAgentState):
     log_data(state, message="\n[SELECT REASONING]")
     log_data(state, selection.reasoning)
 
+    currentMemory.selected_command = selection
+
     return {
-        "selected_command": selection,
+        "vectors_memory": state.vectors_memory,
         "decision": None,
-        "agent_log": state.agent_log,
     }
 
 
 async def toolExecutionNode(state: sqlmapAgentState):
     print("\n[EXECUTE TOOL]\n")
 
-    if not state.selected_command:
+    currentMemory = getCurrentVector(state=state)
+
+    if not currentMemory.selected_command:
         return {"decision": "replan"}
 
-    selection = state.selected_command
-    additional_args = []
+    selection = currentMemory.selected_command
 
-    if selection.level:
-        additional_args.append(f"--level={selection.level}")
+    config_payload = {
+        "level": selection.level or 1,
+        "risk": selection.risk or 1,
+        "batch": True,
+        "random_agent": selection.random_agent or False,
+        "current_db": False,
+        "enumerate_tables": False,
+        "tamper": selection.tamper,
+    }
 
-    if selection.risk:
-        additional_args.append(f"--risk={selection.risk}")
-
-    if selection.technique:
-        additional_args.append(f"--technique={selection.technique}")
-
-    if selection.threads:
-        additional_args.append(f"--threads={selection.threads}")
-
+    # enumeration mapping
     if selection.enumeration:
-        for enum in selection.enumeration:
-            if enum.startswith("--"):
-                additional_args.append(enum)
-            else:
-                additional_args.append(f"--{enum}")
-
-    if selection.random_agent:
-        additional_args.append("--random-agent")
-
-    if selection.tamper:
-        additional_args.append(f"--tamper={','.join(selection.tamper)}")
-
-    additional_args.append("--batch")
-
-    final_args = " ".join(additional_args)
+        if "current_db" in selection.enumeration:
+            config_payload["current_db"] = True
+        if "tables" in selection.enumeration:
+            config_payload["enumerate_tables"] = True
 
     tool_payload = {
         "url": selection.url,
         "data": selection.data or "",
-        "additional_args": final_args,
+        "config": config_payload,
     }
 
     if selection.method != "POST":
         tool_payload["data"] = ""
 
     print(f"\n[TOOL PAYLOAD]\n{tool_payload}")
-    log_data(state=state, message="\n[TOOL PAYLOAD]")
-    log_data(state=state, message=tool_payload)
+    log_data(state, "\n[TOOL PAYLOAD]")
+    log_data(state, str(tool_payload))
 
     try:
         rawOutput = await sqlmap_scan.ainvoke(tool_payload)
@@ -302,7 +324,9 @@ async def toolExecutionNode(state: sqlmapAgentState):
 
     print(f"\n[LAST RAW TOOL RESULT]\n{rawOutput}")
 
-    return {"last_tool_result": rawOutput}
+    currentMemory.last_tool_result = rawOutput
+
+    return {"vectors_memory": state.vectors_memory}
 
 
 async def analyzeNode(state: sqlmapAgentState):
@@ -310,24 +334,34 @@ async def analyzeNode(state: sqlmapAgentState):
 
     # print(f"\n[LAST TOOL RESULT]\n{state.last_tool_result}")
 
-    if not state.last_tool_result:
+    currentMemory = getCurrentVector(state=state)
+    toolResult = currentMemory.last_tool_result
+
+    if not toolResult:
         log_data(state, "No tool result -> skip analysis")
-        return {
-            "analysis": agentFeedback(
-                vulnerability_found=False,
-                exploitation_possible=False,
-                confidence=0.0,
-                reasoning="No tool result available.",
-            ),
-            "confidence": 0.0,
-        }
+
+        currentMemory.analysis = agentFeedback(
+            vulnerability_found=False,
+            exploitation_possible=False,
+            confidence=0.0,
+            reasoning="No tool result available.",
+        )
+
+        currentMemory.confidence = 0.0
+
+        return {"vectors_memory": state.vectors_memory}
 
     prompt = f"""
     Objective:
     {state.objective}
 
     Tool result:
-    {state.last_tool_result}
+    {toolResult}
+    
+    Vector context:
+    Endpoint: {currentMemory.vector_data['endpoint']}
+    Method: {currentMemory.vector_data['method']}
+    Parameter under test: {currentMemory.plan[currentMemory.step_index].params}
 
     You MUST analyze ONLY what is explicitly present in the tool result.
 
@@ -360,11 +394,10 @@ async def analyzeNode(state: sqlmapAgentState):
     log_data(state=state, message=feedback.reasoning)
     log_data(state=state, message=f"Confidence: {feedback.confidence}")
 
-    return {
-        "analysis": feedback,
-        "confidence": feedback.confidence,
-        "agent_log": state.agent_log,
-    }
+    currentMemory.analysis = feedback
+    currentMemory.confidence = feedback.confidence
+
+    return {"vectors_memory": state.vectors_memory}
 
 
 async def evaluateNode(state: sqlmapAgentState):
@@ -372,47 +405,42 @@ async def evaluateNode(state: sqlmapAgentState):
 
     log_data(state=state, message="\n[EVALUATE]")
 
+    currentMemory = getCurrentVector(state=state)
     newIteration = state.iteration + 1
 
-    if newIteration >= state.max_iteration:
-        # print("STOP -> max iterations reached")
-        log_data(state=state, message="STOP -> max iterations reached")
-        return {"decision": "stop", "iteration": newIteration}
-
-    if state.step_index + 1 >= len(state.plan):
-        # print("All plan steps executed")
-        log_data(state=state, message="All plan steps executed")
-        return {"decision": "stop", "iteration": newIteration}
-
-    if state.analysis and state.analysis.vulnerability_found:
-        # print("Vulnerability found -> continue scanning next endpoint")
-        log_data(
-            state=state,
-            message="Vulnerability found -> continue scanning next endpoint",
-        )
+    # plan exhausted
+    if currentMemory.step_index + 1 >= len(currentMemory.plan):
+        currentMemory.done = True
+        state.vector_index += 1
         return {
-            "decision": "continue",
-            "step_index": state.step_index + 1,
+            "vector_index": state.vector_index,
+            "vectors_memory": state.vectors_memory,
+            "decision": "plan",
             "iteration": newIteration,
         }
-    if state.confidence < 0.3:
-        # print("REPLAN -> low confidence")
-        log_data(state=state, message="REPLAN -> low confidence")
-        return {"decision": "replan", "iteration": newIteration}
 
-    # print("CONTINUE -> next step")
-    log_data(state=state, message="CONTINUE -> next step")
+    # vulnerability was found
+    if currentMemory.analysis and currentMemory.analysis.vulnerability_found:
+        currentMemory.step_index += 1
+        return {"decision": "continue", "vectors_memory": state.vectors_memory}
 
+    # if confidence is too low
+    if currentMemory.confidence < 0.3:
+        return {"decision": "replan"}
+
+    currentMemory.step_index += 1
     return {
+        "vectors_memory": state.vectors_memory,
         "decision": "continue",
-        "step_index": state.step_index + 1,
-        "iteration": newIteration,
-        "agent_log": state.agent_log,
     }
 
 
 def outputNode(state: sqlmapAgentState):
-    print(json.dumps(state.model_dump(), indent=4))
+    print(
+        json.dumps(
+            {k: v.model_dump() for k, v in state.vectors_memory.items()}, indent=4
+        )
+    )
 
 
 # ------------------------------------------------------------------------------- #
@@ -470,7 +498,7 @@ def evaluateNodeRouting(state: sqlmapAgentState):
 
 def setupLogger():
     logDir = Path("MCP_tools/sqlmap/logs")
-    logFile = logDir / f"sqlmap_agent_log3.log"
+    logFile = logDir / f"sqlmap_agent_log4.log"
     logger = logging.getLogger("sqlmap_agent")
     logger.setLevel(logging.INFO)
 
@@ -487,6 +515,17 @@ def log_data(state, message: str):
     logging.getLogger("sqlmap_agent").info(message)
 
 
+def getCurrentVector(state: sqlmapAgentState) -> attackVectorMemory:
+    if state.vector_index >= len(state.attack_vectors):
+        return None
+
+    vector = state.attack_vectors[state.vector_index]
+
+    key = f"{vector['endpoint']}::{vector['method']}"
+
+    return state.vectors_memory.get(key)
+
+
 # ------------------------------------------------------------------------------- #
 #                                    Graph                                        #
 # ------------------------------------------------------------------------------- #
@@ -499,10 +538,17 @@ async def agentRunner(endpoints):
     workflow = StateGraph(sqlmapAgentState)
     SESSION_ID = "default_session"
 
+    # test initial prompt
+    agentState.objective = "Analyze given attack vectors."
+
     # prepare attack vectors - filter out vectors without parameters
     for vector in endpoints:
         if len(vector.get("params", [])) > 0:
             agentState.attack_vectors.append(vector)
+
+            key = f"{vector['endpoint']}::{vector['method']}"
+
+            agentState.vectors_memory[key] = attackVectorMemory(vector_data=vector)
 
     # agentState.attack_vectors = endpoints
 

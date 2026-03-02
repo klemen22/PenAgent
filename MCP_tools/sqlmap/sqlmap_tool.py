@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from langchain.tools import tool
 from dotenv import load_dotenv
 import os
@@ -21,10 +21,27 @@ savedPayload = {}
 testEndpoint = os.getenv(key="TEST_ENDPOINT", default="http://192.168.157.136/")
 testEndpointData = os.getenv(key="TEST_ENDPOINT_DATA", default="")
 
+VALID_TAMPER = {
+    "between",
+    "space2comment",
+    "charunicodeencode",
+    "randomcase",
+}
+
 
 # -------------------------------------------------------------------------------#
 #                             SQLmap tool implementation                         #
 # -------------------------------------------------------------------------------#
+
+
+class sqlmapConfig(BaseModel):
+    level: int = Field(default=1, ge=1, le=5)
+    risk: int = Field(default=1, ge=1, le=3)
+    batch: bool = True
+    random_agent: bool = False
+    current_db: bool = False
+    enumerate_tables: bool = False
+    tamper: Optional[List[str]] = Field(default=None)
 
 
 # pydantic schema
@@ -33,7 +50,7 @@ class sqlmapInput(BaseModel):
 
     url: str = Field(..., description="URL address of target.")
     data: str = Field("", description="Data string to be sent through POST.")
-    additional_args: str = Field("", description="Any additional SQLmap arguments.")
+    config: sqlmapConfig
 
 
 @tool(
@@ -41,7 +58,10 @@ class sqlmapInput(BaseModel):
     description="Perform SQL injection testing.",
     response_format="content",
 )
-async def sqlmap_scan(url: str, data: str, additional_args: str = "") -> Dict[str, Any]:
+async def sqlmap_scan(url: str, data: str, config: sqlmapConfig) -> Dict[str, Any]:
+
+    additional_args = buildAdditionalArgs(config=config)
+
     payload = {
         "url": url,
         "data": data,
@@ -63,6 +83,38 @@ async def returnSqlmapToolCall(mode: str, payload=None):
 
 
 # -------------------------------------------------------------------------------#
+#                                      Helper function                           #
+# -------------------------------------------------------------------------------#
+
+
+def buildAdditionalArgs(config: sqlmapConfig) -> str:
+    args = []
+
+    args.append(f"--level={config.level}")
+    args.append(f"--risk={config.risk}")
+
+    if config.batch:
+        args.append("--batch")
+
+    if config.random_agent:
+        args.append("--random-agent")
+
+    if config.current_db:
+        args.append("--current-db")
+
+    if config.enumerate_tables:
+        args.append("--tables")
+
+    if config.tamper:
+        valid = [t for t in config.tamper if t in VALID_TAMPER]
+
+        if valid:
+            args.append(f"--tamper={','.join(valid)}")
+
+    return " ".join(args)
+
+
+# -------------------------------------------------------------------------------#
 #                                       Tool test                                #
 # -------------------------------------------------------------------------------#
 
@@ -76,7 +128,7 @@ async def sqlmapTest():
         {
             "url": testEndpoint,
             "data": testEndpointData,
-            "additional_args": "--batch --level=1 --risk=1",
+            "config": {"level": 1, "risk": 1, "batch": True},
         }
     )
 
