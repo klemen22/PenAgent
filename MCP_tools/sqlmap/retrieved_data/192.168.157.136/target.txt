@@ -1,0 +1,1 @@
+http://192.168.157.136:8081/styling.php?page-title=1 (GET)  # /usr/bin/sqlmap -u http://192.168.157.136:8081/styling.php?page-title=1 --batch --level=1 --risk=1 --batch

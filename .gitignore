@@ -6,3 +6,4 @@ orchestrator_memory.sqlite
 sqlmap_tool_output.txt
 nmap_agent_prompts
 dvwa_login.py
+crawler_output

@@ -29,6 +29,14 @@ llm = ChatOllama(
 
 finalAgent = llm.bind_tools([sqlmap_scan])
 
+# log count
+logDir = Path("MCP_tools/sqlmap/logs")
+
+logCount = 0
+for log in os.listdir(logDir):
+    if os.path.isfile(os.path.join(logDir, log)):
+        logCount += 1
+
 
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
@@ -99,6 +107,8 @@ class attackVectorMemory(BaseModel):
         default=0.0,
         description="Confidence factor for deciding if replanning is needed.",
     )
+    replan_count: int = Field(default=0, description="Counter for number or replans")
+    max_replans: int = 5
     done: bool = Field(default=False)
 
 
@@ -129,6 +139,7 @@ class sqlmapAgentState(BaseModel):
 
 
 async def planningNode(state: sqlmapAgentState):
+    log_data(state=state, message=f"[PLANNING NODE] -> enter node")
 
     if state.vector_index >= len(state.attack_vectors):
         return {"decision": "stop"}
@@ -136,6 +147,9 @@ async def planningNode(state: sqlmapAgentState):
     currentMemory = getCurrentVector(state=state)
 
     if currentMemory.plan and state.decision != "replan":
+        log_data(
+            state=state, message=f"[PLANNING NODE] -> exit node (all vectors are done)"
+        )
         return {"decision": "continue"}
 
     print("\n[PLANNING]\n")
@@ -150,6 +164,12 @@ async def planningNode(state: sqlmapAgentState):
     Endpoint: {currentMemory.vector_data['endpoint']}
     Method: {currentMemory.vector_data['method']}
     Parameters: {currentMemory.vector_data['params']}
+    
+    You MUST always create TWO steps:
+    1. detection phase
+    2. exploitation phase
+
+    Exploitation phase must use the same parameters but marked as phase="exploitation".
 
     STRICT RULES:
     1. Do NOT construct URLs.
@@ -184,12 +204,11 @@ async def planningNode(state: sqlmapAgentState):
                 prompt
             )
 
-            log_data(state, "[PLANNING]")
-            log_data(state, outputPlan.reasoning)
+            log_data(state, f"[PLANNING]: {outputPlan.reasoning}")
 
             currentMemory.plan = outputPlan.steps
             currentMemory.step_index = 0
-
+            log_data(state=state, message=f"[PLANNING NODE] -> exit node")
             return {"vectors_memory": state.vectors_memory, "decision": "continue"}
 
         except Exception as e:
@@ -206,11 +225,12 @@ async def planningNode(state: sqlmapAgentState):
 
     currentMemory.plan = []
     currentMemory.step_index = 0
-
+    log_data(state=state, message=f"[PLANNING NODE] -> exit node")
     return {"vectors_memory": state.vectors_memory, "decision": "stop"}
 
 
 async def selectActionNode(state: sqlmapAgentState):
+    log_data(state=state, message=f"[SELECT ACTION NODE] -> enter node")
 
     with open("MCP_tools\sqlmap\sqlmap_allowed_arguments.json") as f:
         allowedArguments = f.read()
@@ -221,6 +241,9 @@ async def selectActionNode(state: sqlmapAgentState):
     print("\n[SELECT_ACTION]\n")
 
     if currentMemory.step_index >= len(currentMemory.plan):
+        log_data(
+            state=state, message="[SELECT ACTION NODE] -> exit node (replan needed!)"
+        )
         return {"decision": "replan"}
 
     step = currentMemory.plan[currentMemory.step_index]
@@ -267,8 +290,8 @@ async def selectActionNode(state: sqlmapAgentState):
     # print("\n[SELECT REASONING]")
     # print(selection.reasoning)
 
-    log_data(state, message="\n[SELECT REASONING]")
-    log_data(state, selection.reasoning)
+    log_data(state, message=f"[SELECT REASONING]: {selection.reasoning}")
+    log_data(state=state, message=f"[SELECT ACTION NODE -> exit node]")
 
     currentMemory.selected_command = selection
 
@@ -280,10 +303,11 @@ async def selectActionNode(state: sqlmapAgentState):
 
 async def toolExecutionNode(state: sqlmapAgentState):
     print("\n[EXECUTE TOOL]\n")
-
+    log_data(state=state, message="[EXECUTE TOOL] -> enter node")
     currentMemory = getCurrentVector(state=state)
 
     if not currentMemory.selected_command:
+        log_data(state=state, message="[EXECUTE TOOL] -> exit node (replan needed!)")
         return {"decision": "replan"}
 
     selection = currentMemory.selected_command
@@ -297,6 +321,16 @@ async def toolExecutionNode(state: sqlmapAgentState):
         "enumerate_tables": False,
         "tamper": selection.tamper,
     }
+
+    step = currentMemory.plan[currentMemory.step_index]
+
+    if step.phase == "detection":
+        config_payload["current_db"] = False
+        config_payload["enumerate_tables"] = False
+
+    if step.phase == "exploitation":
+        config_payload["current_db"] = True
+        config_payload["enumerate_tables"] = True
 
     # enumeration mapping
     if selection.enumeration:
@@ -330,8 +364,7 @@ async def toolExecutionNode(state: sqlmapAgentState):
         tool_payload["data"] = ""
 
     print(f"\n[TOOL PAYLOAD]\n{tool_payload}")
-    log_data(state, "\n[TOOL PAYLOAD]")
-    log_data(state, str(tool_payload))
+    log_data(state, f"[TOOL PAYLOAD]: {str(tool_payload)}")
 
     try:
         rawOutput = await sqlmap_scan(
@@ -350,11 +383,13 @@ async def toolExecutionNode(state: sqlmapAgentState):
 
     currentMemory.last_tool_result = rawOutput
 
+    log_data(state=state, message="[EXECUTE TOOL] -> exit node")
     return {"vectors_memory": state.vectors_memory}
 
 
 async def analyzeNode(state: sqlmapAgentState):
     print("\n[ANALYZE]\n")
+    log_data(state=state, message="[ANALYZE] -> enter node")
 
     # print(f"\n[LAST TOOL RESULT]\n{state.last_tool_result}")
 
@@ -372,7 +407,7 @@ async def analyzeNode(state: sqlmapAgentState):
         )
 
         currentMemory.confidence = 0.0
-
+        log_data(state=state, message="[ANALYZE] -> exit node")
         return {"vectors_memory": state.vectors_memory}
 
     prompt = f"""
@@ -414,20 +449,21 @@ async def analyzeNode(state: sqlmapAgentState):
     # print(f"Feedback:\n {feedback.reasoning}")
     # print(f"Confidence: {feedback.confidence}")
 
-    log_data(state=state, message="\n[ANALYZE]")
-    log_data(state=state, message=feedback.reasoning)
+    # log_data(state=state, message="[ANALYZE]")
+    log_data(state=state, message=f"Reasoning: {feedback.reasoning}")
     log_data(state=state, message=f"Confidence: {feedback.confidence}")
 
     currentMemory.analysis = feedback
     currentMemory.confidence = feedback.confidence
 
+    log_data(state=state, message="[ANALYZE] -> exit node")
     return {"vectors_memory": state.vectors_memory}
 
 
 async def evaluateNode(state: sqlmapAgentState):
     print("\n[EVALUATE]\n")
 
-    log_data(state=state, message="\n[EVALUATE]")
+    log_data(state=state, message="[EVALUATE] -> enter node")
 
     currentMemory = getCurrentVector(state=state)
     newIteration = state.iteration + 1
@@ -436,6 +472,7 @@ async def evaluateNode(state: sqlmapAgentState):
     if currentMemory.step_index + 1 >= len(currentMemory.plan):
         currentMemory.done = True
         state.vector_index += 1
+        log_data(state=state, message="[EVALUATE] -> exit node (plan exhausted)")
         return {
             "vector_index": state.vector_index,
             "vectors_memory": state.vectors_memory,
@@ -446,13 +483,37 @@ async def evaluateNode(state: sqlmapAgentState):
     # vulnerability was found
     if currentMemory.analysis and currentMemory.analysis.vulnerability_found:
         currentMemory.step_index += 1
+        log_data(
+            state=state,
+            message="[EVALUATE] -> exit node (continue to next vector)",
+        )
         return {"decision": "continue", "vectors_memory": state.vectors_memory}
 
     # if confidence is too low
     if currentMemory.confidence < 0.3:
-        return {"decision": "replan"}
+        currentMemory.replan_count += 1
+
+        if currentMemory.replan_count >= currentMemory.max_replans:
+            state.vector_index += 1
+            log_data(
+                state=state,
+                message="[EVALUATE] -> exit node (replan capped reached -> moving to next vector)",
+            )
+
+            return {
+                "decision": "plan",
+                "vector_index": state.vector_index,
+                "vectors_memory": state.vectors_memory,
+            }
+        else:
+            log_data(
+                state=state,
+                message="[EVALUATE] -> exit node (too low confidence -> replan needed)",
+            )
+            return {"decision": "plan", "vectors_memory": state.vectors_memory}
 
     currentMemory.step_index += 1
+    log_data(state=state, message="[EVALUATE] -> exit node")
     return {
         "vectors_memory": state.vectors_memory,
         "decision": "continue",
@@ -514,15 +575,24 @@ def evaluateNodeRouting(state: sqlmapAgentState):
     elif state.decision == "replan":
         return "plan"
 
+    elif state.decision == "plan":
+        return "plan"
+
     elif state.decision == "stop":
         return "output"
 
     return "output"
 
 
+def planningNodeRouting(state: sqlmapAgentState):
+    if state.decision == "continue":
+        return "select_action"
+    else:
+        return "output"
+
+
 def setupLogger():
-    logDir = Path("MCP_tools/sqlmap/logs")
-    logFile = logDir / f"sqlmap_agent_log4.log"
+    logFile = logDir / f"sqlmap_agent_log{logCount}.log"
     logger = logging.getLogger("sqlmap_agent")
     logger.setLevel(logging.INFO)
 
@@ -576,6 +646,10 @@ async def agentRunner(endpoints):
 
             print(f"[VALID ATTACK VECTOR]:\n\n {vector}")
 
+    log_data(
+        state=agentState,
+        message=f"[PREPARING] - Number of valid attack vectors to analyse: {len(agentState.vectors_memory)}",
+    )
     # agentState.attack_vectors = endpoints
 
     # -------------------------------
@@ -594,7 +668,14 @@ async def agentRunner(endpoints):
     # -------------------------------
 
     workflow.add_edge(START, "planning_node")
-    workflow.add_edge("planning_node", "select_action_node")
+    workflow.add_conditional_edges(
+        "planning_node",
+        planningNodeRouting,
+        {
+            "select_action": "select_action_node",
+            "output": "output_node",
+        },
+    )
     workflow.add_edge("select_action_node", "tool_execution_node")
     workflow.add_edge("tool_execution_node", "analyze_node")
     workflow.add_edge("analyze_node", "evaluate_node")
@@ -614,7 +695,7 @@ async def agentRunner(endpoints):
 
     # display workflow
     pngBytes = graph.get_graph().draw_mermaid_png()
-    pngPath = "MCP_tools\sqlmap\sqlmap_agent_graphV3.png"
+    pngPath = "MCP_tools\sqlmap\sqlmap_agent_graph.png"
 
     with open(pngPath, "wb") as f:
         f.write(pngBytes)
