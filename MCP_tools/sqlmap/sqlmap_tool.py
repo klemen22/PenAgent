@@ -124,7 +124,7 @@ async def sqlmapTest():
     print("\n" + "-" * 20)
     print("SQLmap tool test\n")
 
-    result = await sqlmap_scan.ainvoke(
+    result = await sqlmap_scan(
         {
             "url": testEndpoint,
             "data": testEndpointData,

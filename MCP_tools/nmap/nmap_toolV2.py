@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Dict, Any
-from langchain.tools import tool
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
+import asyncio
 
 try:
     from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
@@ -30,28 +30,20 @@ class nmapInput(BaseModel):
         ..., description="IP address, hostname or CIDR (ex. 192.168.157.0/24)"
     )
     scan_type: str = Field("-sV", description="Nmap scan type (ex. -sS -sV)")
-    ports: str = Field(
-        "", description="Comma-separated ports or ranges (ex. '22,80,443')"
+    ports: Optional[str] = Field(
+        default=None, description="Comma-separated ports or ranges (ex. '22,80,443')"
     )
-    additional_args: str = Field("", description="Additional nmap args")
+    additional_args: Optional[str] = Field(
+        default=None, description="Additional nmap args"
+    )
 
 
-@tool(
-    args_schema=nmapInput,
-    description="Performs network or host scan in given network.",
-    response_format="content",
-)
-async def nmap_scan(
-    target: str,
-    scan_type: str,
-    ports: str,
-    additional_args: str = "",
-) -> Dict[str, Any]:
+async def nmap_scan(input: nmapInput) -> Dict[str, Any]:
     payload = {
-        "target": target,
-        "scan_type": scan_type,
-        "ports": ports,
-        "additional_args": additional_args,
+        "target": input.target,
+        "scan_type": input.scan_type,
+        "ports": input.ports,
+        "additional_args": input.additional_args,
     }
     await returnToolCall(mode="write", payload=payload)
     result = await mcp.call_tool(name="nmap_scan", arguments=payload)
@@ -64,3 +56,29 @@ async def returnToolCall(mode: str, payload=None):  # very useful stuff lmao
         savedPayload = payload
     elif mode == "read":
         return savedPayload
+
+
+# -------------------------------------------------------------------------------#
+#                                       Tool test                                #
+# -------------------------------------------------------------------------------#
+
+
+async def nmapTest():
+    print("\n" + "-" * 20)
+    print("Nmap tool test\n")
+
+    result = await nmap_scan(
+        nmapInput(
+            target="192.168.157.0/24",
+            scan_type="-sn",
+            ports="",
+            additional_args="",
+        )
+    )
+
+    print("> Raw tool output from MCP:\n")
+    print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(nmapTest())

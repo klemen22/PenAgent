@@ -1,0 +1,3 @@
+2026-03-08 12:56:48,769 | INFO | [PLANNING NODE] -> enter node
+2026-03-08 12:56:48,769 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-08 12:56:48,770 | INFO | [TOOL CALL NODE] -> enter node

@@ -1,0 +1,92 @@
+{
+  "host_discovery": {
+    "safe": [
+      { "name": "-sn", "description": "Ping scan, no port scan" },
+      { "name": "-n", "description": "Disable DNS resolution" },
+      { "name": "-PE", "description": "ICMP echo discovery" },
+      { "name": "-PP", "description": "ICMP timestamp discovery" },
+      { "name": "-PM", "description": "ICMP netmask discovery" },
+      { "name": "-PS", "type": "ports", "example": "-PS80,443" },
+      { "name": "-PA", "type": "ports", "example": "-PA80" }
+    ],
+    "aggressive": [
+      {
+        "name": "-Pn",
+        "description": "Treat all hosts as alive (skip discovery)"
+      },
+      { "name": "--traceroute" }
+    ]
+  },
+
+  "port_scanning": {
+    "safe": [
+      { "name": "-sS", "description": "TCP SYN scan" },
+      { "name": "-sT", "description": "TCP connect scan" },
+      { "name": "-F", "description": "Fast scan" },
+      { "name": "--top-ports", "type": "int", "example": "--top-ports 100" },
+      { "name": "-p", "type": "ports", "example": "-p 22,80,443" }
+    ],
+    "aggressive": [
+      { "name": "-p-", "description": "Scan all ports" },
+      { "name": "-sU", "description": "UDP scan" },
+      { "name": "--port-ratio", "type": "float" }
+    ]
+  },
+
+  "service_detection": {
+    "safe": [
+      { "name": "-sV", "description": "Service version detection" },
+      { "name": "--version-light" }
+    ],
+    "aggressive": [
+      { "name": "--version-all" },
+      { "name": "--version-intensity", "type": "int", "range": "0-9" }
+    ]
+  },
+
+  "os_detection": {
+    "safe": [{ "name": "-O", "description": "OS detection" }],
+    "aggressive": [{ "name": "--osscan-guess" }]
+  },
+
+  "script_scanning": {
+    "safe": [
+      { "name": "-sC", "description": "Default NSE scripts" },
+      { "name": "--script", "type": "string", "example": "--script vuln" }
+    ],
+    "aggressive": [
+      { "name": "--script vuln" },
+      { "name": "--script exploit" },
+      { "name": "--script auth" }
+    ]
+  },
+
+  "performance": {
+    "safe": [
+      { "name": "-T3", "description": "Normal timing" },
+      { "name": "-T4", "description": "Faster scan" }
+    ],
+    "aggressive": [
+      { "name": "-T5" },
+      { "name": "--min-rate", "type": "int" },
+      { "name": "--max-retries", "type": "int" }
+    ]
+  },
+
+  "evasion": {
+    "high_risk": [
+      { "name": "-f", "description": "Fragment packets" },
+      { "name": "-D", "type": "list", "example": "-D RND:10" },
+      { "name": "--spoof-mac" },
+      { "name": "--source-port", "type": "int" }
+    ]
+  },
+
+  "output_control": [
+    { "name": "-oX", "type": "file" },
+    { "name": "-oN", "type": "file" },
+    { "name": "-oG", "type": "file" },
+    { "name": "--open" },
+    { "name": "--reason" }
+  ]
+}
