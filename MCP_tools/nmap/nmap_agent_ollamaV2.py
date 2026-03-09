@@ -892,9 +892,16 @@ async def agentRunner(prompt):
         config={"thread_id": SESSIN_ID, "recursion_limit": 1000},
     )
 
-    print(
-        f"[FINAL RESULT]:\n\nSummary:\n{result.get("summary")}\n\nMemory:{result.get("host_memory")}"
-    )
+    # print(
+    #    f"[FINAL RESULT]:\n\nSummary:\n{result.get("summary")}\n\nMemory:{result.get("host_memory")}"
+    # )
+
+    return {
+        "summary": result.get("summary").content if result.get("summary") else "",
+        "hosts": {
+            ip: host.model_dump() for ip, host in result.get("host_memory", {}).items()
+        },
+    }
 
 
 # ------------------------------------------------------------------------------- #
@@ -907,3 +914,5 @@ if __name__ == "__main__":
 
     testPrompt = "Position yourself in the network 192.168.157.0 and discover all relevant hosts."
     result = asyncio.run(agentRunner(prompt=testPrompt))
+
+    print(f"[FINAL RESULT]:\n\n{result}")
