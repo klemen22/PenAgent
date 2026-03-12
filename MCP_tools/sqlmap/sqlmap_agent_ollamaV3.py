@@ -14,6 +14,8 @@ load_dotenv()
 
 from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, sqlmapConfig
 
+# TODO: check if async is really needed or if you can convert code back to sync?
+
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
 # ------------------------------------------------------------------------------- #
@@ -690,8 +692,8 @@ async def agentRunner(endpoints):
     )
     workflow.add_edge("output_node", END)
 
-    checkpointer = InMemorySaver()
-    graph = workflow.compile(checkpointer=checkpointer)
+    # checkpointer = InMemorySaver()
+    graph = workflow.compile(checkpointer=False)
 
     # display workflow
     pngBytes = graph.get_graph().draw_mermaid_png()
