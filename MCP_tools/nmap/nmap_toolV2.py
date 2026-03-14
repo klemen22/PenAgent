@@ -3,12 +3,7 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
 import asyncio
-
-try:
-    from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
-except Exception:
-    from mcp_server import KaliToolsClient, setup_mcp_server
-
+from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
 
 load_dotenv()
 

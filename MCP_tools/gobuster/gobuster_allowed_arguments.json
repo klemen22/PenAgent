@@ -1,0 +1,71 @@
+{
+  "commands": {
+    "web_enumeration": {
+      "safe": [
+        {
+          "name": "dir",
+          "description": "Directory and file enumeration mode"
+        },
+        {
+          "name": "vhost",
+          "description": "Virtual host enumeration mode. Used when multiple domains share the same server"
+        }
+      ]
+    },
+
+    "infrastructure_enumeration": {
+      "safe": [
+        {
+          "name": "dns",
+          "description": "DNS subdomain enumeration mode"
+        },
+        {
+          "name": "tftp",
+          "description": "TFTP enumeration mode"
+        },
+        {
+          "name": "s3",
+          "description": "AWS S3 bucket enumeration mode"
+        },
+        {
+          "name": "gcs",
+          "description": "Google Cloud Storage bucket enumeration mode"
+        }
+      ]
+    },
+
+    "utility": {
+      "info": [
+        {
+          "name": "help",
+          "aliases": ["h"],
+          "description": "Shows a list of commands or help for one command"
+        }
+      ]
+    }
+  },
+
+  "global_options": {
+    "information": [
+      {
+        "name": "--help",
+        "alias": "-h",
+        "description": "Show help menu"
+      },
+      {
+        "name": "--version",
+        "alias": "-v",
+        "description": "Print Gobuster version"
+      }
+    ]
+  },
+
+  "agent_constraints": {
+    "recommended_default_command": "dir",
+    "notes": [
+      "Use 'dir' for HTTP directory and file enumeration",
+      "Do not switch enumeration mode unless explicitly required",
+      "Most web enumeration tasks should use 'dir'"
+    ]
+  }
+}

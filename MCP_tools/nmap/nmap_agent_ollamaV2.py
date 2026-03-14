@@ -719,18 +719,18 @@ async def outputNode(state: nmapAgentState):
         
         NO markdown, NO emojis.
         """
-
-    prompt = f"""
-    Create a concise summary based on the given initial objective and gathered infromation.
-    
-    Objective:
-    {state.objective}
-    
-    Host infromation:
-    {state.host_memory}
-    
-    NO markdown, NO emojis.
-    """
+    else:
+        prompt = f"""
+        Create a concise summary based on the given initial objective and gathered infromation.
+        
+        Objective:
+        {state.objective}
+        
+        Host infromation:
+        {state.host_memory}
+        
+        NO markdown, NO emojis.
+        """
 
     logData(message="[OUTPUT NODE] -> generating summary")
     state.summary = await llm.ainvoke(prompt)
