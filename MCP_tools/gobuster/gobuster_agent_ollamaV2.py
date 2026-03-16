@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import re
 from collections import Counter
+import json
 
 load_dotenv()
 
@@ -39,8 +40,9 @@ for log in os.listdir(logDir):
     if os.path.isfile(os.path.join(logDir, log)):
         logCount += 1
 
+
 with open("MCP_tools/gobuster/gobuster_allowed_arguments.json") as f:
-    ALLOWED_ARGS = f.read()
+    ALLOWED_ARGS = json.load(f)
 
 
 # ------------------------------------------------------------------------------- #
@@ -65,7 +67,7 @@ class gobusterMemory(BaseModel):
 
 
 class gobusterToolCall(BaseModel):
-    url: str = Field(default="")
+    url: str
     mode: str = Field(default="dir")
     additional_args: str = Field(default="")
     reasoning: Optional[str] = Field(default=None)
@@ -352,10 +354,14 @@ async def planningNode(state: gobusterAgentState):
 async def toolNode(state: gobusterAgentState):
     logData(message="[TOOL NODE] -> enter node")
 
-    # TODO: create tool arg filter and fallback
-
     toolCall = state.tool_call
     memory = state.memory
+
+    toolCall = validateToolCall(toolCall=toolCall, target=state.target)
+
+    if state.tool_call != toolCall:
+        logData(f"[TOOL NODE] -> initial tool call:\n {state.tool_call}")
+        logData(f"[TOOL NODE] -> fixed tool call: \n{toolCall}")
 
     if not toolCall:
         return {
@@ -449,6 +455,9 @@ async def evaluateNode(state: gobusterAgentState):
         During tool execution we encountered an error listed bellow:
         {memory.last_tool_output}
         
+        [MEMORY]
+        {memory}
+        
         [TASK]
         Your job is to do following 3 things:
             > Assign a confidence factor between 0.0 and 1.0 for the current situation.
@@ -473,7 +482,7 @@ async def evaluateNode(state: gobusterAgentState):
         [TASK]
         Your job is to do following 3 things:
             > Assign a confidence factor between 0.0 and 1.0 for the current situation.
-            > Decide a feedback flag: "continue", "done" or "error"
+            > Decide a feedback flag: "continue" or "done"
                 * "continue" -> this flag should be used if additional scans are needed for the current situation.
                 * "done" -> if all relevant information was collected.
             > Give your reasoning for your decisions.
@@ -748,6 +757,90 @@ def countData(endpoints):
 
 def retrieveCurrentDecision(state: gobusterAgentState):
     return state.decision
+
+
+def extractArguments():
+    allowedModes = set()
+    allowedFlags = set()
+
+    commands = ALLOWED_ARGS.get("commands", {})
+
+    for category in commands.values():
+        for cmd in category.get("safe", []):
+            allowedModes.add(cmd["name"])
+
+            for arg in cmd.get("allowed_args", []):
+                allowedFlags.add(arg["name"])
+
+    return allowedModes, allowedFlags
+
+
+def validateToolCall(toolCall: gobusterToolCall, target: str):
+
+    allowedModes, allowedFlags = extractArguments()
+
+    # URL check
+    url = toolCall.url.strip()
+
+    if target not in url:
+        url = target
+
+    # mode check
+    mode = toolCall.mode.lower().strip()
+
+    if mode not in allowedModes:
+        mode = "dir"
+
+    # additional args check
+    args = toolCall.additional_args
+
+    if not args:
+        return gobusterToolCall(
+            url=url,
+            mode=mode,
+            additional_args="",
+            reasoning=toolCall.reasoning,
+        )
+
+    splitArgs = args.split()
+
+    cleanArgs = []
+
+    i = 0
+
+    while i < len(splitArgs):
+        arg = splitArgs[i]
+
+        # remove wordlist
+        if arg in ["-w", "--worldlist"]:
+            i += 2
+            continue
+
+        # remove recursion
+        if arg == "--recusrion":
+            i += 1
+            continue
+
+        if arg.startswith("-"):
+
+            if arg in allowedFlags:
+                cleanArgs.append(arg)
+
+                # check for values
+                if i + 1 < len(splitArgs) and not splitArgs[i + 1].startswith("-"):
+                    cleanArgs.append(splitArgs[i + 1])
+                    i += 1
+
+        i += 1
+
+    finalArgs = " ".join(cleanArgs)
+
+    return gobusterToolCall(
+        url=url,
+        mode=mode,
+        additional_args=finalArgs,
+        reasoning=toolCall.reasoning,
+    )
 
 
 # ------------------------------------------------------------------------------- #
