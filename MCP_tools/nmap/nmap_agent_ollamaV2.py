@@ -13,6 +13,7 @@ import re
 load_dotenv()
 
 from MCP_tools.nmap.nmap_toolV2 import nmap_scan, nmapInput
+from Orchestrator.memory.agent_output import AgentOutput, HostMemory
 
 # TODO: check if async is really needed or if you can convert code back to sync?
 
@@ -23,6 +24,7 @@ from MCP_tools.nmap.nmap_toolV2 import nmap_scan, nmapInput
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
 
 llm = ChatOllama(
+    name="nmap_agent",
     model="huihui_ai/qwen3-abliterated:8b",
     base_url=LM_API,
     temperature=0.2,
@@ -733,13 +735,40 @@ async def outputNode(state: nmapAgentState):
         """
 
     logData(message="[OUTPUT NODE] -> generating summary")
-    state.summary = await llm.ainvoke(prompt)
+    response = await llm.ainvoke(prompt)
+    state.summary = response.content
 
-    logData(message="[OUTPUT NODE] -> exit node - summary done")
-    return {
-        "summary": state.summary,
-        "host_memory": state.host_memory,
-    }
+    if state.fail:
+        logData(message="[OUTPUT NODE] -> exit node - summary done")
+        return {
+            "agent_output": AgentOutput(
+                agent_name="nmap",
+                success=False,
+                fail=True,
+                fail_reason=state.fail_reason,
+                summary=state.summary,
+            )
+        }
+    else:
+        logData(message="[OUTPUT NODE] -> exit node - summary done")
+
+        hosts = {
+            key: HostMemory(
+                ip=value.ip,
+                status=value.status,
+                open_ports=value.open_ports,
+                os_guess=value.os_guess,
+            )
+            for key, value in state.host_memory.items()
+        }
+
+        return AgentOutput(
+            agent_name="nmap",
+            success=True,
+            discovered_hosts=state.discovered_hosts,
+            host_memory=hosts,
+            summary=state.summary,
+        )
 
 
 # ------------------------------------------------------------------------------- #
@@ -809,16 +838,10 @@ def retrieveCurrentDecision(state: nmapAgentState):
 # ------------------------------------------------------------------------------- #
 #                                    Graph                                        #
 # ------------------------------------------------------------------------------- #
-async def agentRunner(prompt):
-    agentState = nmapAgentState()
+def nmapBuilder():
     setupLogger()
 
     workflow = StateGraph(nmapAgentState)
-    SESSIN_ID = "default_session"
-
-    # test prompt
-    # agentState.objective = "Position yourself in the network 192.168.157.0 and discover all relevant hosts."
-    agentState.objective = prompt
 
     # -------------------------------
     # graph nodes
@@ -878,8 +901,6 @@ async def agentRunner(prompt):
         },
     )
     workflow.add_edge("output_node", END)
-
-    # checkpointer = InMemorySaver()
     graph = workflow.compile(checkpointer=False)
 
     # display workflow
@@ -889,14 +910,17 @@ async def agentRunner(prompt):
     with open(pngPath, "wb") as f:
         f.write(pngBytes)
 
-    result = await graph.ainvoke(
-        agentState.model_dump(),
-        config={"thread_id": SESSIN_ID, "recursion_limit": 1000},
-    )
+    return graph
 
-    # print(
-    #    f"[FINAL RESULT]:\n\nSummary:\n{result.get("summary")}\n\nMemory:{result.get("host_memory")}"
-    # )
+
+async def agentRunner(prompt):
+
+    graph = nmapBuilder()
+
+    state = nmapAgentState()
+    state.objective = prompt
+
+    result = await graph.ainvoke(state.model_dump())
 
     return {
         "summary": result.get("summary").content if result.get("summary") else "",

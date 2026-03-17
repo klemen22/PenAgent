@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv
 from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
 from pydantic import BaseModel, Field
-from typing import List, Dict
+from typing import List, Dict, Any
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 load_dotenv()
@@ -221,6 +221,15 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         # normalize url
         path, queryParams = normalizeURL(endpoint)
 
+        originParams = []
+
+        originURL = request.get("source")
+        if originURL:
+            _, originParams = normalizeURL(originURL)
+
+        # merge params
+        queryParams = list(set(queryParams) | set(originParams))
+
         # remove empty params
         queryParams = [p for p in queryParams if p]
 
@@ -230,7 +239,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
         headers = response.get("headers", {})
         rawCookies = headers.get("Set-Cookie")
         parsedCookies = parseCookies(rawCookies) if rawCookies else {}
-        endpointRedirect = request.get("source")
+        originURL = request.get("source")
 
         if response.get("forms"):
             for f in response["forms"]:
@@ -243,12 +252,12 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                     vectors.append(
                         AttackVector(
                             endpoint=path,
-                            method=f.get("method", "POST"),
+                            method=f.get("method") or request.get("method") or "GET",
                             params=formParams,
                             vector_type="forms",
                             confidence=calculateConfidence("forms", len(formParams)),
                             cookies=parsedCookies,
-                            origins=[endpointRedirect] if endpointRedirect else [],
+                            origins=[originURL] if originURL else [],
                         )
                     )
 
@@ -261,7 +270,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                     vector_type="url_params",
                     confidence=calculateConfidence("url_params", len(queryParams)),
                     cookies=parsedCookies,
-                    origins=[endpointRedirect] if endpointRedirect else [],
+                    origins=[originURL] if originURL else [],
                 )
             )
 
@@ -274,7 +283,7 @@ def parseKatana(katanaOutput) -> List[AttackVector]:
                     vector_type="xhr_api",
                     confidence=calculateConfidence("xhr_api", len(queryParams)),
                     cookies=parsedCookies,
-                    origins=[endpointRedirect] if endpointRedirect else [],
+                    origins=[originURL] if originURL else [],
                 )
             )
 
@@ -346,27 +355,44 @@ async def main(payload):
 
     fixedVectors = deduplicateOutput(allVectors)
 
-    # diabolical print
-    print(
-        f"\n\nFINAL RESULT:\n\n{json.dumps([v.model_dump() for v in fixedVectors], indent=4)}"
-    )
+    finalVectors = finalVectorFilter(vectors=fixedVectors)
 
-    return fixedVectors
+    print(f"\n\nFINAL RESULT:\n\n{json.dumps(finalVectors, indent=4)}")
+
+    print(f"\n\nRAW FINAL RESULT:\n\n{finalVectors}")
+
+    return finalVectors
 
 
 # simple confidence calculator to give priority to better attack vectors
-def calculateConfidence(vectorType: str, paramCount: str):
+def calculateConfidence(vectorType: str, paramCount: int, cookies=None):
+
     score = 0
 
     if vectorType == "forms":
-        score += 8
+        score += 10
     elif vectorType == "url_params":
-        score += 6
+        score += 7
+    elif vectorType == "xhr_api":
+        score += 4
 
-    if paramCount > 2:
-        score += 1
+    score += min(paramCount, 5)
+
+    if cookies:
+        score += 2
 
     return score
+
+
+def finalVectorFilter(vectors: List[AttackVector]) -> List[Dict[str, Any]]:
+
+    finalVectors = []
+
+    for vector in vectors:
+        if len(vector.params) > 0:
+            finalVectors.append(vector.model_dump(mode="json"))
+
+    return finalVectors
 
 
 # ------------------------------------------------------------------------------- #

@@ -15,8 +15,7 @@ load_dotenv()
 
 from MCP_tools.gobuster.gobuster_toolV2 import gobuster_scan, gobusterInput
 from MCP_tools.gobuster.crawler import main as crawlerMain
-
-# TODO: Create arguments and URL filter for consistency and reinforce communication between planning and evaluate nodes
+from Orchestrator.memory.agent_output import AgentOutput, attackVector
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -25,6 +24,7 @@ from MCP_tools.gobuster.crawler import main as crawlerMain
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
 
 llm = ChatOllama(
+    name="gobuster_agent",
     model="huihui_ai/qwen3-abliterated:8b",
     base_url=LM_API,
     temperature=0.2,
@@ -607,10 +607,41 @@ async def outputNode(state: gobusterAgentState):
     response = await llm.ainvoke(prompt)
     state.gobuster_output.summary = response.content
 
-    logData(message="[OUTPUT NODE] -> exit node - summary done")
-    return {
-        "gobuster_output": state.gobuster_output,
-    }
+    if state.fail:
+        logData(message="[OUTPUT NODE] -> exit node - summary done")
+        return {
+            "agent_output": AgentOutput(
+                agent_name="gobuster",
+                success=False,
+                fail=True,
+                fail_reason=state.fail_reason,
+                summary=state.gobuster_output.summary,
+            )
+        }
+    else:
+        attack_vectors = []
+
+        if state.gobuster_output.crawler_result:
+            for vector in state.gobuster_output.crawler_result:
+                attack_vectors.append(
+                    attackVector(
+                        endpoint=vector.get("url", ""),
+                        method=vector.get("method", ""),
+                        parameters=vector.get("parameters", []),
+                        vector_type=vector.get("vector_type", ""),
+                        confidence=vector.get("confidence", 0),
+                        cookies=vector.get("cookies", {}),
+                        origins=vector.get("origins", []),
+                    )
+                )
+
+        logData(message="[OUTPUT NODE] -> exit node - summary done")
+        return AgentOutput(
+            agent_name="gobuster",
+            success=True,
+            attack_vectors=attack_vectors,
+            summary=state.gobuster_output.summary,
+        )
 
 
 # ------------------------------------------------------------------------------- #
@@ -848,20 +879,14 @@ def validateToolCall(toolCall: gobusterToolCall, target: str):
 # ------------------------------------------------------------------------------- #
 
 
-async def agentRunner(prompt):
-    agentState = gobusterAgentState()
+def gobusterBuilder():
     setupLogger()
 
     workflow = StateGraph(gobusterAgentState)
-    SESSIN_ID = "default_session"
-
-    # test prompt placeholder
-    agentState.objective = prompt
 
     # -------------------------------
     # graph nodes
     # -------------------------------
-
     workflow.add_node("planning_node", planningNode)
     workflow.add_node("tool_node", toolNode)
     workflow.add_node("parse_output_node", parseOutputNode)
@@ -912,10 +937,17 @@ async def agentRunner(prompt):
     with open(pngPath, "wb") as f:
         f.write(pngBytes)
 
-    result = await graph.ainvoke(
-        agentState.model_dump(),
-        config={"thread_id": SESSIN_ID, "recursion_limit": 1000},
-    )
+    return graph
+
+
+async def agentRunner(prompt: str):
+
+    graph = gobusterBuilder()
+
+    state = gobusterAgentState()
+    state.objective = prompt
+
+    result = await graph.ainvoke(state.model_dump())
 
     return {
         "summary": result["gobuster_output"].summary,

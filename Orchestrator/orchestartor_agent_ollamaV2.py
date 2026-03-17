@@ -10,11 +10,10 @@ import json
 import logging
 from pathlib import Path
 
-# tool agents
-from MCP_tools.nmap.nmap_agent_ollama import agentRunner as nmapAgent
-from MCP_tools.gobuster.gobuster_agent_ollama import agentRunner as gobusterAgent
-from MCP_tools.crawler import main as crawlerMain
-from MCP_tools.sqlmap.sqlmap_agent_ollamaV3 import agentRunner as sqlmapAgent
+# tool agents for subgraphs
+from MCP_tools.nmap.nmap_agent_ollamaV2 import nmapBuilder
+from MCP_tools.gobuster.gobuster_agent_ollamaV2 import gobusterBuilder
+from MCP_tools.sqlmap.sqlmap_agent_ollamaV3 import sqlmapBuilder
 
 # output schema
 from Orchestrator.memory.agent_output import AgentOutput
@@ -35,6 +34,25 @@ from memory.sqlite_manager import (
 
 load_dotenv()
 initializeDB()
+
+# get compiled graphs
+NMAP_GRAPH = nmapBuilder()
+GOBUSTER_GRAPH = gobusterBuilder()
+SQLMAP_GRAPH = sqlmapBuilder()
+
+AGENT_REGISTRY = {
+    "nmap": {
+        "capabilities": ["host_discovery", "port_scan"],
+    },
+    "gobuster": {
+        "capabilities": ["directory_enum", "web_enum"],
+    },
+    "sqlmap": {
+        "capabilities": ["sql_injection"],
+    },
+}
+
+AGENT_REQUIREMENTS = {"nmap": [], "crawler": [], "sqlmap": ["attack_vectors"]}
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -71,7 +89,7 @@ class portInfo(BaseModel):
     state: str = Field(default="unknown")
 
 
-class hostMemory(BaseModel):
+class HostMemory(BaseModel):
     ip: str = Field(default="")
     status: str = Field(default="unknown")
     open_ports: List[portInfo] = Field(default=[])
@@ -84,9 +102,12 @@ class hostMemory(BaseModel):
 
 
 class attackVector(BaseModel):
-    url: str = Field(default="")
+    endpoint: str = Field(default="")
     method: str = Field(default="")
     parameters: List[str] = Field(default_factory=list)
+    vector_type: str = Field(default="")
+    confidence: int = Field(default=0)
+    cookies: Optional[Dict[str, Any]] = Field(default=dict)
     origins: List[str] = Field(default_factory=list)
 
 
@@ -96,6 +117,7 @@ class attackVector(BaseModel):
 
 
 class vulnerability(BaseModel):
+    source_agent: str = Field(default="")
     host: str = Field(default="")
     url: str = Field(default="")
     parameters: List[str] = Field(default_factory=list)
@@ -142,10 +164,20 @@ class executorOutut(BaseModel):
     agent_prompt: str = Field(default="")
 
 
+class agentInput(BaseModel):
+    prompt: str
+    additional_data: Optional[Any] = Field(default=None)
+
+
 class agentCall(BaseModel):
     agent: Literal["nmap", "crawler", "sqlmap"]
     task_ID: Optional[int] = Field(default=None)
-    agent_prompt: str = Field(default="")
+    agent_input: agentInput = Field(default_factory=agentInput)
+
+    execution_status: Literal["pending", "executed", "skipped", "failed", "unknown"] = (
+        "pending"
+    )
+    message: Optional[str] = Field(default=None)
 
 
 class reasoningOutput(BaseModel):
@@ -154,15 +186,15 @@ class reasoningOutput(BaseModel):
 
 
 class reasoningNodeOutput(BaseModel):
-    route: Literal["new", "retry", "expand", "replan", "stop", None]
+    route: Literal["new", "retry", "expand", "replan", "stop"] = None
 
     selected_task_ID: Optional[int] = Field(default=None)
     reasoning: Optional[str] = Field(default=None)
 
 
 class evaluateNodeOutput(BaseModel):
-    decision: Literal["success", "retry", "expand", "replan", None]
-    confidence: int = Field(default=0.0)
+    decision: Literal["success", "retry", "expand", "replan"] = None
+    confidence: float = Field(default=0.0)
     reasoning: Optional[str] = Field(default=None)
 
 
@@ -177,7 +209,7 @@ class orchestratorState(BaseModel):
 
     # cannonical knowledge
     discovered_hosts: List[str] = Field(default_factory=list)
-    host_memory: Dict[str, hostMemory] = Field(default_factory=dict)
+    host_memory: Dict[str, HostMemory] = Field(default_factory=dict)
     attack_vectors: List[attackVector] = Field(default_factory=list)
     vulnerabilities: List[vulnerability] = Field(default_factory=list)
 
@@ -185,7 +217,12 @@ class orchestratorState(BaseModel):
     retrieved_memory: Dict[Any] = Field(default_factory=dict)
 
     # raw agent output history
-    agent_outputs: Dict[str, AgentOutput] = Field(default_factory=dict)
+    agent_outputs_history: Dict[int, AgentOutput] = Field(
+        default_factory=dict, description="[agent_ID_number, agentOutput]"
+    )
+
+    # current agent output
+    agent_output: Optional[AgentOutput] = Field(default=None)
 
     # agent execution
     agent_call: agentCall = Field(default_factory=agentCall)
@@ -215,6 +252,49 @@ def planningNode(state: orchestratorState):
 
     if state.task_queue is not None:
         return state
+
+    reason = state.reasoning
+
+    if reason.route == "replan":
+        logData(message="[PLANNING NODE] -> replanning...")
+        prompt = f"""
+        [REPLANNING]
+        
+        You are a cybersecurity planning agent.
+        The current task queue must be replaced with a new plan.
+
+        Objective:
+        {state.objective}
+
+        Discovered hosts:
+        {state.discovered_hosts}
+
+        Host memory:
+        {state.host_memory}
+
+        Attack vectors:
+        {state.attack_vectors}
+
+        Vulnerabilities:
+        {state.vulnerabilities}
+
+        Feedback from evaluation:
+        {state.evaluate.reasoning}
+        
+        [FEEDBACK FROM REASONING]
+        
+        {reason.reasoning}
+    
+        Rules:
+        - produce between 3 and 10 tasks
+        - tasks must be ordered
+        - tasks must map to agents (nmap, gobuster, sqlmap)
+
+        Return JSON:
+        - id (choose unique identifiers for tasks in ascending order)
+        - agent (suggest agent and explain your decision in "description field")
+        - description 
+        """
 
     # TODO: add supervisor feedback when creating a plan
     prompt = f"""
@@ -318,7 +398,7 @@ def memoryWriteNode(state: orchestratorState):
 
     try:
         for host in state.host_memory.values():
-            storeHosts(host_memory=hostMemory)
+            storeHosts(host_memory=HostMemory)
             for port in host.open_ports:
                 storePorts(port)
 
@@ -485,7 +565,7 @@ def reasoningNode(state: orchestratorState):
         
         Reasoning: {evaluateOutput.reasoning}
         
-        Based on the information listed bellow give your additional feedback for replanning tasks.
+        Based on the information listed bellow give your additional feedback for replanning task.
         Objective:
         {state.objective}
         
@@ -638,63 +718,6 @@ def planExpansionNode(state: orchestratorState):
     }
 
 
-def replanNode(state: orchestratorState):
-    logData(f"[REPLAN NODE] -> enter node")
-    reason = state.reasoning
-
-    prompt = f"""
-    [REPLANNING]
-
-    You are a cybersecurity planning agent.
-    The current task queue must be replaced with a new plan.
-
-    Objective:
-    {state.objective}
-
-    Discovered hosts:
-    {state.discovered_hosts}
-
-    Host memory:
-    {state.host_memory}
-
-    Attack vectors:
-    {state.attack_vectors}
-
-    Vulnerabilities:
-    {state.vulnerabilities}
-
-    Feedback from evaluation:
-    {state.evaluate.reasoning}
-    
-    [FEEDBACK FROM REASONING]
-    
-    {reason.reasoning}
-    
-    Rules:
-    - produce between 3 and 10 tasks
-    - tasks must be ordered
-    - tasks must map to agents (nmap, gobuster, sqlmap)
-
-    Return JSON:
-    - id (choose unique identifiers for tasks in ascending order)
-    - agent (suggest agent and explain your decision in "description field")
-    - description
-    """
-
-    try:
-        output = llm.with_structured_output(PlannerOutput).invoke(prompt)
-        state.task_queue = taskQueue(queue=output.queue)
-
-        logData("[REPLAN NODE] -> task queue replaced")
-
-    except Exception as e:
-        logData(f"[REPLAN NODE] -> failed: {str(e)}")
-
-    return {
-        "task_queue": state.task_queue,
-    }
-
-
 def agentExecutionNode(state: orchestratorState):
     logData("[AGENT EXECUTION NODE] -> enter node")
 
@@ -753,13 +776,359 @@ def agentExecutionNode(state: orchestratorState):
     """
 
     output = llm.with_structured_output(executorOutut).invoke(prompt)
-
     state.agent_call.agent = output.agent
     state.agent_call.task_ID = taskID
-    state.agent_call.agent_prompt = output.agent_prompt
 
+    requirements = AGENT_REQUIREMENTS.get(output.agent, [])
+
+    for req in requirements:
+
+        if getattr(state, req) and output.agent_prompt:
+            logData(
+                message=f"[AGENT EXECUTION NODE] -> requirements for agent {output.agent} satisfied"
+            )
+            state.agent_call.agent_input.prompt = output.agent_prompt
+            state.agent_call.execution_status = "pending"
+            state.agent_call.agent_input.additional_data = getattr(state, req)
+            break
+
+        else:
+            state.agent_call.agent_input.prompt = output.agent_prompt
+            state.agent_call.execution_status = "skipped"
     return {
         "agent_call": state.agent_call,
+    }
+
+
+async def nmapAgent(state: orchestratorState):
+    # TODO: reset previous agent call output in reasoning node!
+    logData("[NMAP NODE] -> enter node")
+
+    agentCall = state.agent_call
+    agent_ID = agentCall.task_ID
+
+    if agentCall.execution_status == "skipped":
+        logData("[NMAP NODE] -> agent call skipped due to missing arguments")
+        return
+
+    for retries in range(2):
+        try:
+            result = await NMAP_GRAPH.ainvoke(
+                {"objective": agentCall.agent_input.prompt}
+            )
+
+            state.agent_output = result
+            state.agent_outputs_history[agent_ID] = result
+
+            if result.success:
+                logData("[NMAP NODE] -> agent call successful")
+                state.discovered_hosts = result.discovered_hosts
+                state.host_memory = result.host_memory
+                agentCall.execution_status = "executed"
+
+                logData("[NMAP NODE] -> exit node")
+                return {
+                    # agent specific update
+                    "agent_output": state.agent_output,
+                    "agent_output_history": state.agent_outputs_history,
+                    "agent_call": state.agent_call,
+                    # global knowledge update
+                    "discovered_hosts": state.discovered_hosts,
+                    "host_memory": state.host_memory,
+                }
+            else:
+                logData("[NMAP NODE] -> agent call failed")
+                agentCall.execution_status = "failed"
+
+                logData("[NMAP NODE] -> exit node")
+                return {
+                    # agent specific update
+                    "agent_output": state.agent_output,
+                    "agent_output_history": state.agent_outputs_history,
+                    "agent_call": state.agent_call,
+                }
+
+        except Exception as e:
+            retries += 1
+
+    logData("[NMAP NODE] -> agent call produced an exception")
+    agentCall.message = (
+        f"Failed to call {agentCall.agent} within {retries} retries. Last call produced the following error:\n\n"
+        + str(e)
+    )
+    agentCall.execution_status = "failed"
+
+    logData("[NMAP NODE] -> exit node")
+    return {
+        "agent_call": state.agent_call,
+    }
+
+
+async def gobusterAgent(state: orchestratorState):
+    logData(message="[GOBUSTER NODE] -> enter node")
+    agentCall = state.agent_call
+    agentID = agentCall.task_ID
+
+    if agentCall.execution_status == "skipped":
+        logData("[GOBUSTER NODE] -> agent call skipped due to missing arguments")
+        return
+
+    for retries in range(2):
+        try:
+            result = await GOBUSTER_GRAPH.ainvoke(
+                {"objective": agentCall.agent_input.prompt}
+            )
+
+            state.agent_output = result
+            state.agent_outputs_history[agentID] = result
+
+            if result.success:
+                logData(message="[GOBUSTER NODE] -> agent call successful")
+                state.attack_vectors = result.attack_vectors
+                agentCall.execution_status = "executed"
+
+                logData(message="[GOBUSTER NODE] -> exit node")
+                return {
+                    # agent specific updates
+                    "agent_call": state.agent_call,
+                    "agent_output": state.agent_output,
+                    "agent_output_history": state.agent_outputs_history,
+                    # global knowledge update
+                    "attack_vectors": state.attack_vectors,
+                }
+            else:
+                logData(message="[GOBUSTER NODE] -> agent call failed")
+                agentCall.execution_status = "failed"
+
+                logData(message="[GOBUSTER NODE] -> exit node")
+                return {
+                    "agent_call": state.agent_call,
+                    "agent_output": state.agent_output,
+                    "agent_output_history": state.agent_outputs_history,
+                }
+
+        except Exception as e:
+            retries += 1
+
+    logData("[GOBUSTER NODE] -> agent call produced an exception")
+
+    agentCall.message = (
+        f"Failed to call {agentCall.agent} within {retries} retries. Last call produced the following error:\n\n"
+        + str(e)
+    )
+    agentCall.execution_status = "failed"
+
+    logData(message="[GOBUSTER NODE] -> exit node")
+    return {
+        "agent_call": state.agent_call,
+    }
+
+
+async def sqlmapAgent(state: orchestratorState):
+    logData("[SQLMAP NODE] -> enter node")
+
+    agentCall = state.agent_call
+    agent_ID = agentCall.task_ID
+
+    if agentCall.execution_status == "skipped":
+        logData("[SQLMAP NODE] -> agent call skipped due to missing arguments")
+        return
+
+    for retries in range(2):
+        try:
+            result = await SQLMAP_GRAPH.ainvoke(
+                {
+                    "objective": agentCall.agent_input.prompt,
+                    "attack_vectors": agentCall.agent_input.additional_data,
+                }
+            )
+
+            state.agent_output = result
+            state.agent_outputs_history[agent_ID] = result
+
+            if result.success:
+                logData(message="[SQLMAP NODE] -> agent call successful")
+                state.vulnerabilities.extend(result.vulnerabilities)
+                agentCall.execution_status = "executed"
+
+                logData(message="[SQLMAP NODE] -> exit node")
+                return {
+                    # agent specific updates
+                    "agent_call": state.agent_call,
+                    "agent_output": state.agent_output,
+                    "agent_output_history": state.agent_outputs_history,
+                    # global knowledge update
+                    "vulnerabilities": state.vulnerabilities,
+                }
+
+            else:
+                logData(message="[SQLMAP NODE] -> agent call failed")
+                agentCall.execution_status = "failed"
+
+                logData(message="[SQLMAP NODE] -> exit node")
+                return {
+                    # agent specific updates
+                    "agent_call": state.agent_call,
+                    "agent_output": state.agent_output,
+                    "agent_call_history": state.agent_outputs_history,
+                }
+
+        except Exception as e:
+            retries += 1
+
+    logData("[SQLMAP NODE] -> agent call produced an exception")
+
+    agentCall.message = (
+        f"Failed to call {agentCall.agent} within {retries} retries. Last call produced the following error:\n\n"
+        + str(e)
+    )
+    agentCall.execution_status = "failed"
+
+    logData(message="[SQLMAP NODE] -> exit node")
+    return {
+        "agent_call": state.agent_call,
+    }
+
+
+def evaluateNode(state: orchestratorState):
+    # 3 types of prompts based on the execution status: failed, skipped, executed
+    agentCall = state.agent_call
+    taskID = state.reasoning.selected_task_ID
+    task = getTaskById(task_id=taskID, queue=state.task_queue)
+
+    initialPrompt = f"""
+        [INFO]
+        You are a cybersecurity orchestration evaluation agent.
+        
+        [TASK]
+        Your job is to evaluate the result of the last tool agent execution
+        and decide what the orchestrator should do next.
+        
+        You MUST evaluate the success of the current task based on:
+            - the task description
+            - the tool execution result
+            - the current global knowledge
+                
+        You do NOT create new tasks or plans.
+        You ONLY evaluate the result and return the next decision.
+        
+        Objective: {state.objective}
+        
+        Task ID: {taskID}
+        
+        Task description:
+        {task.description}
+        
+        Retry count: {task.retry_count}/{task.max_retries}
+        """
+
+    if agentCall.execution_status == "executed":
+        print("placeholder")
+
+        situationalPrompt = f"""
+        [TOOL]
+        
+        Tool execution was successful!
+        
+        Selected agent: {agentCall.agent}
+        
+        Execution status: {agentCall.execution_status}
+        
+        Tool output:
+        {state.agent_output}
+        """
+
+    elif agentCall.execution_status == "skipped":
+        situationalPrompt = f"""
+        [WARNING]
+        
+        Tool agent was skipped!
+        
+        Selected agent: {agentCall.agent}
+        
+        Execution status: {agentCall.execution_status}
+        
+        Warning message: {agentCall.message}
+        """
+    elif agentCall.execution_status == "failed":
+        situationalPrompt = f"""
+        [WARNING]
+        
+        Tool agent failed!
+        
+        Selected agent: {agentCall.agent}
+        
+        Execution status: {agentCall.execution_status}
+        
+        Error message: {agentCall.message if agentCall.message else "None"}
+        
+        Tool output:
+        {state.agent_output if state.agent_output else "None"}
+        """
+    else:
+        situationalPrompt = f"""
+        [WARNING]
+        
+        Agent's position and tool execution progress is not clearly defined!
+        
+        Selected agent: {agentCall.agent}
+        
+        Execution status: {agentCall.execution_status}
+        
+        Tool output:
+        {state.agent_output if state.agent_output else "None"}
+        """
+
+    additonalPrompt = f"""
+    [RULES]
+    
+    You must select one of the following decisions:
+
+    success
+    - The task was completed successfully.
+
+    retry
+    - The task failed but should be attempted again.
+
+    expand
+    - The task succeeded and discovered new potential attack surface.
+    - The planner should generate additional tasks.
+
+    replan
+    - The current plan is ineffective or invalid.
+    - The planner should generate a new plan.
+    
+    [SPECIAL CASES]
+    If execution_status is "skipped":
+    - The tool was not executed due to missing requirements.
+    - Usually this should result in "replan" or "expand".
+
+    If execution_status is "failed":
+    - Retry if retries are still available.
+    - Otherwise select "replan".
+
+    If execution_status is "executed":
+    - Evaluate the actual results returned by the agent.
+    
+    
+    Return valid JSON with:
+
+    decision: one of ["success", "retry", "expand", "replan"]
+    confidence: number between 0.0 and 1.0
+    reasoning: helpful explanation for orchestrator
+    """
+    finalPrompt = initialPrompt + situationalPrompt + additonalPrompt
+
+    try:
+        result = llm.with_structured_output(evaluateNodeOutput).invoke(finalPrompt)
+        state.evaluate = result
+
+    except Exception as e:
+        logData(f"[EVALUATE NODE] -> LLM failure: {str(e)}")
+
+    # TODO: add current agent output clearning, task marking, task iteration etc.
+    return {
+        "evaluate": state.evaluate,
     }
 
 

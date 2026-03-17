@@ -5,7 +5,6 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import InMemorySaver
 import json
 import logging
 from pathlib import Path
@@ -13,8 +12,10 @@ from pathlib import Path
 load_dotenv()
 
 from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, sqlmapConfig
+from Orchestrator.memory.agent_output import AgentOutput, vulnerability
 
 # TODO: check if async is really needed or if you can convert code back to sync?
+# TODO: add fallback and error handling
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -23,6 +24,7 @@ from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, sqlmapConfig
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
 
 llm = ChatOllama(
+    name="sqlmap_agent",
     model="huihui_ai/qwen3-abliterated:8b",
     base_url=LM_API,
     temperature=0.2,
@@ -131,6 +133,8 @@ class sqlmapAgentState(BaseModel):
 
     decision: Optional[str] = Field(default=None)
 
+    summary: Optional[str] = Field(default=None)
+
     # logging
     agent_log: List[str] = Field(default_factory=list)
 
@@ -142,6 +146,11 @@ class sqlmapAgentState(BaseModel):
 
 async def planningNode(state: sqlmapAgentState):
     log_data(state=state, message=f"[PLANNING NODE] -> enter node")
+
+    if not state.vectors_memory:
+        for vector in state.attack_vectors:
+            key = f"{vector['endpoint']}::{vector['method']}"
+            state.vectors_memory[key] = attackVectorMemory(vector_data=vector)
 
     if state.vector_index >= len(state.attack_vectors):
         return {"decision": "stop"}
@@ -522,12 +531,40 @@ async def evaluateNode(state: sqlmapAgentState):
     }
 
 
-def outputNode(state: sqlmapAgentState):
-    print(
-        json.dumps(
-            {k: v.model_dump() for k, v in state.vectors_memory.items()}, indent=4
-        )
+async def outputNode(state: sqlmapAgentState):
+    log_data(state=state, message="[OUTPUT NODE] -> enter node")
+
+    # TODO: Add fallback and fail summary!
+
+    vectors = json.dumps(
+        {k: v.model_dump() for k, v in state.vectors_memory.items()}, indent=4
     )
+
+    prompt = f"""
+    [TASK]
+        
+    Create a concise summary based on the given initial objective and gathered infromation.
+    
+    Objective:
+    {state.objective}
+    
+    Final vectors:
+    {vectors}
+    """
+
+    log_data(state=state, message="[OUTPUT NODE] -> generating summary")
+    response = await llm.ainvoke(prompt)
+    state.summary = response.content
+
+    log_data(state=state, message="[OUTPUT NODE] -> exit node - summary done")
+    return {
+        "agent_output": AgentOutput(
+            agent_name="sqlmap",
+            success=True,
+            vulnerabilities=sqlmapVectorConverter(state=state),
+            summary=state.summary,
+        )
+    }
 
 
 # ------------------------------------------------------------------------------- #
@@ -570,7 +607,7 @@ def sqlmapOutputParser(toolOutput):
 
 
 def evaluateNodeRouting(state: sqlmapAgentState):
-
+    # TODO: remove this junk
     if state.decision == "continue":
         return "select_action"
 
@@ -622,14 +659,129 @@ def getCurrentVector(state: sqlmapAgentState) -> attackVectorMemory:
     return state.vectors_memory.get(key)
 
 
+def sqlmapVectorConverter(state: sqlmapAgentState) -> List[vulnerability]:
+
+    vectors_memory = state.vectors_memory
+    vulnerabilities = []
+
+    for vectorKey, vector in vectors_memory.items():
+
+        analysis = vector.analysis
+
+        if not analysis:
+            continue
+
+        if not analysis.vulnerability_found:
+            continue
+
+        data = vector.vector_data
+
+        vulnerabilities.append(
+            vulnerability(
+                host=data.get("host", ""),
+                url=data.get("url", ""),
+                parameters=data.get("parameters", []),
+                vulner_type="SQL Injection",
+                severity=severityConverter(analysis.confidence),
+                evidence=str(vector.last_tool_result),
+            )
+        )
+
+    return vulnerabilities
+
+
+def severityConverter(conf: float):
+
+    if conf > 0.9:
+        return "critical"
+
+    if conf > 0.7:
+        return "high"
+
+    if conf > 0.4:
+        return "medium"
+
+    return "low"
+
+
 # ------------------------------------------------------------------------------- #
 #                                    Graph                                        #
 # ------------------------------------------------------------------------------- #
 
 
+def sqlmapBuilder():
+    setupLogger()
+    workflow = StateGraph(sqlmapAgentState)
+
+    # -------------------------------
+    # graph nodes
+    # -------------------------------
+
+    workflow.add_node("planning_node", planningNode)
+    workflow.add_node("select_action_node", selectActionNode)
+    workflow.add_node("tool_execution_node", toolExecutionNode)
+    workflow.add_node("analyze_node", analyzeNode)
+    workflow.add_node("evaluate_node", evaluateNode)
+    workflow.add_node("output_node", outputNode)
+
+    # -------------------------------
+    # graph edges
+    # -------------------------------
+
+    workflow.add_edge(START, "planning_node")
+    workflow.add_conditional_edges(
+        "planning_node",
+        planningNodeRouting,
+        {
+            "select_action": "select_action_node",
+            "output": "output_node",
+        },
+    )
+    workflow.add_edge("select_action_node", "tool_execution_node")
+    workflow.add_edge("tool_execution_node", "analyze_node")
+    workflow.add_edge("analyze_node", "evaluate_node")
+    workflow.add_conditional_edges(
+        "evaluate_node",
+        evaluateNodeRouting,
+        {
+            "select_action": "select_action_node",
+            "plan": "planning_node",
+            "output": "output_node",
+        },
+    )
+    workflow.add_edge("output_node", END)
+
+    # checkpointer = InMemorySaver()
+    graph = workflow.compile(checkpointer=False)
+
+    # display workflow
+    pngBytes = graph.get_graph().draw_mermaid_png()
+    pngPath = "MCP_tools\sqlmap\sqlmap_agent_graph.png"
+
+    with open(pngPath, "wb") as f:
+        f.write(pngBytes)
+
+    return graph
+
+
+async def agentRunner(prompt: str, endpoints):
+    graph = sqlmapBuilder()
+
+    state = sqlmapAgentState()
+    state.objective = prompt
+    state.attack_vectors = endpoints
+
+    result = await graph.ainvoke(state.model_dump())
+
+    return {
+        "summary": result.summary,
+    }
+
+
+"""
 async def agentRunner(endpoints):
     agentState = sqlmapAgentState()
-    logger = setupLogger()
+    setupLogger()
 
     workflow = StateGraph(sqlmapAgentState)
     SESSION_ID = "default_session"
@@ -705,7 +857,7 @@ async def agentRunner(endpoints):
     await graph.ainvoke(
         agentState.model_dump(),
         config={"thread_id": SESSION_ID, "recursion_limit": 1000},
-    )
+    )"""
 
 
 # ------------------------------------------------------------------------------- #
@@ -719,4 +871,6 @@ if __name__ == "__main__":
     with open("MCP_tools\gobuster\crawler_test_dump3.json", "r") as f:
         endpoints = json.load(f)
 
-    result = asyncio.run(agentRunner(endpoints=endpoints))
+    result = asyncio.run(
+        agentRunner(prompt="Analyze given attack vectors.", endpoints=endpoints)
+    )

@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 from typing import Dict, List, Any, Optional
-from orchestartor_agent_ollamaV2 import attackVector, vulnerability, hostMemory
+from orchestartor_agent_ollamaV2 import attackVector, vulnerability, HostMemory
 
 
 class AgentOutput(BaseModel):
@@ -17,12 +17,10 @@ class AgentOutput(BaseModel):
 
     # nmap
     discovered_hosts: List[str] = Field(default=[])
-    host_memory: Dict[str, hostMemory] = Field(default={})
+    host_memory: Dict[str, HostMemory] = Field(default={})
 
     # gobuster + crawler
     attack_vectors: List[attackVector] = Field(default=[])
 
     # other agents - sqlmap,...
     vulnerabilities: List[vulnerability] = Field(default=[])
-
-    raw_output: Optional[str] = None
