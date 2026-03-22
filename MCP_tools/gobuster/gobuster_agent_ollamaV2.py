@@ -16,16 +16,21 @@ load_dotenv()
 from MCP_tools.gobuster.gobuster_toolV2 import gobuster_scan, gobusterInput
 from MCP_tools.gobuster.crawler import main as crawlerMain
 from Orchestrator.memory.agent_output import AgentOutput, attackVector
+from metadata.metadata_logger import setupMetadataLogger, logMetadata, logTotalTokens
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
 # ------------------------------------------------------------------------------- #
 
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
+TOKEN_WINDOW_SIZE = os.getenv(key="TOKEN_WINDOW_SIZE", default=4096)
+AGENT_NAME = "gobuster_agent"
+LLM_MODEL = os.getenv(key="LLM_MODEL", default="huihui_ai/qwen3-abliterated:8b")
 
 llm = ChatOllama(
-    name="gobuster_agent",
-    model="huihui_ai/qwen3-abliterated:8b",
+    name=AGENT_NAME,
+    model=LLM_MODEL,
+    num_ctx=TOKEN_WINDOW_SIZE,
     base_url=LM_API,
     temperature=0.2,
     format=None,
@@ -44,6 +49,7 @@ for log in os.listdir(logDir):
 with open("MCP_tools/gobuster/gobuster_allowed_arguments.json") as f:
     ALLOWED_ARGS = json.load(f)
 
+setupMetadataLogger(AGENT_NAME)
 
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
@@ -67,7 +73,7 @@ class gobusterMemory(BaseModel):
 
 
 class gobusterToolCall(BaseModel):
-    url: str
+    url: str = Field(default="")
     mode: str = Field(default="dir")
     additional_args: str = Field(default="")
     reasoning: Optional[str] = Field(default=None)
@@ -108,6 +114,8 @@ class gobusterAgentState(BaseModel):
 
     # output
     gobuster_output: gobusterOutput = Field(default_factory=gobusterOutput)
+
+    agent_output: AgentOutput = Field(default_factory=AgentOutput)
 
     # report
     fail: bool = Field(default=False)
@@ -161,6 +169,7 @@ async def planningNode(state: gobusterAgentState):
         if target:
             state.target = target
 
+        # print(f"FOUND TARGET: {target}")
         state.iteration += 1
 
     # check itterations
@@ -171,6 +180,7 @@ async def planningNode(state: gobusterAgentState):
         )
 
         return {
+            "target": state.target,
             "fail": True,
             "fail_reason": state.fail_reason,
             "iteration": state.iteration,
@@ -180,6 +190,7 @@ async def planningNode(state: gobusterAgentState):
     if state.feedback.feedback is not None:
         if feedback.feedback == "done":
             return {
+                "target": state.target,
                 "decision": "crawler",
                 "iteration": state.iteration,
             }
@@ -320,14 +331,20 @@ async def planningNode(state: gobusterAgentState):
 
     for attempt in range(retries):
         try:
-            output = await llm.with_structured_output(gobusterToolCall).ainvoke(
-                finalPrompt
-            )
-            logData(message=f"[PLANNING NODE] -> created next tool call: {output}")
-            state.tool_call = output
-            logData(message="[PLANNING NODE] -> exit node")
+            outputFull = await llm.with_structured_output(
+                gobusterToolCall, include_raw=True
+            ).ainvoke(finalPrompt)
 
+            outputPlan = outputFull["parsed"]
+            outputRaw = outputFull["raw"]
+
+            logData(message=f"[PLANNING NODE] -> created next tool call: {outputPlan}")
+            state.tool_call = outputPlan
+            logMetadata(agent_name=AGENT_NAME, metadata=outputRaw.response_metadata)
+
+            logData(message="[PLANNING NODE] -> exit node")
             return {
+                "target": state.target,
                 "tool_call": state.tool_call,
                 "decision": "continue",
                 "iteration": state.iteration,
@@ -344,6 +361,7 @@ async def planningNode(state: gobusterAgentState):
     state.fail_reason = f"Planning failed after {attempt} attempts. Recieved following error:\n\n{str(e)}"
 
     return {
+        "target": state.target,
         "fail": True,
         "fail_reason": state.fail_reason,
         "iteration": state.iteration,
@@ -431,7 +449,15 @@ def parseOutputNode(state: gobusterAgentState):
 
     endpoints = parsed["endpoints"]
 
-    state.memory.endpoints.extend([gobusterEndpoint(**e) for e in endpoints])
+    existing_paths = {e.path.rstrip("/") for e in state.memory.endpoints}
+
+    for e in endpoints:
+
+        normalized = e["path"].rstrip("/")
+
+        if normalized not in existing_paths:
+            state.memory.endpoints.append(gobusterEndpoint(**e))
+            existing_paths.add(normalized)
 
     state.memory.signals.extend(parsed["signals"])
 
@@ -493,7 +519,14 @@ async def evaluateNode(state: gobusterAgentState):
         - reasoning
         """
 
-    feedback = await llm.with_structured_output(toolFeedback).ainvoke(prompt)
+    feedbackFull = await llm.with_structured_output(
+        toolFeedback, include_raw=True
+    ).ainvoke(prompt)
+
+    feedback = feedbackFull["parsed"]
+    feedbackRaw = feedbackFull["raw"]
+
+    logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
     state.feedback = feedback
 
     if feedback.feedback == "error":
@@ -547,7 +580,7 @@ async def crawlerNode(state: gobusterAgentState):
 
         crawlerOutput = await crawlerMain(payload=crawlerInput)
         output.crawler_result = crawlerOutput
-
+        print(f"[CRAWLER OUTPUT]: {json.dumps(crawlerOutput, indent=4)}")
         logData(message="[CRAWLER NODE] -> crawling successful -> exit node")
         return {
             "decision": "done",
@@ -605,7 +638,10 @@ async def outputNode(state: gobusterAgentState):
 
     logData(message="[OUTPUT NODE] -> generating summary")
     response = await llm.ainvoke(prompt)
+
     state.gobuster_output.summary = response.content
+    logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
+    logTotalTokens(agent_name=AGENT_NAME)
 
     if state.fail:
         logData(message="[OUTPUT NODE] -> exit node - summary done")
@@ -636,12 +672,14 @@ async def outputNode(state: gobusterAgentState):
                 )
 
         logData(message="[OUTPUT NODE] -> exit node - summary done")
-        return AgentOutput(
-            agent_name="gobuster",
-            success=True,
-            attack_vectors=attack_vectors,
-            summary=state.gobuster_output.summary,
-        )
+        return {
+            "agent_output": AgentOutput(
+                agent_name="gobuster",
+                success=True,
+                attack_vectors=attack_vectors,
+                summary=state.gobuster_output.summary,
+            )
+        }
 
 
 # ------------------------------------------------------------------------------- #
@@ -649,7 +687,7 @@ async def outputNode(state: gobusterAgentState):
 # ------------------------------------------------------------------------------- #
 def setupLogger():
     logFile = logDir / f"gobuster_agent_log{logCount}.log"
-    logger = logging.getLogger("gobuster_agent")
+    logger = logging.getLogger("gobuster_agent_log")
     logger.setLevel(logging.INFO)
 
     fileHandler = logging.FileHandler(logFile, mode="w")
@@ -661,7 +699,7 @@ def setupLogger():
 
 
 def logData(message: str):
-    logging.getLogger("gobuster_agent").info(message)
+    logging.getLogger("gobuster_agent_log").info(message)
 
 
 def parseGobusterOutput(rawOutput):
@@ -746,10 +784,6 @@ def parseGobusterOutput(rawOutput):
 
     signals = [k for k, v in signals.items() if v]
 
-    # print(f"FINAL ENDPOINTS:\n\n{endpoints}")
-    # print(f"FINAL METADATA:\n\n{metadata}")
-    # print(f"FINAL SIGNALS:\n\n{signals}")
-
     return {
         "metadata": metadata,
         "endpoints": endpoints,
@@ -812,6 +846,8 @@ def validateToolCall(toolCall: gobusterToolCall, target: str):
 
     # URL check
     url = toolCall.url.strip()
+    print(f"URL: {url}")
+    print(f"TARGET: {target}")
 
     if target not in url:
         url = target
@@ -949,10 +985,7 @@ async def agentRunner(prompt: str):
 
     result = await graph.ainvoke(state.model_dump())
 
-    return {
-        "summary": result["gobuster_output"].summary,
-        "attack_vectors": result["gobuster_output"].crawler_result,
-    }
+    print(f"[FINAL RESULT]:\n\n{result}")
 
 
 # ------------------------------------------------------------------------------- #
@@ -965,5 +998,3 @@ if __name__ == "__main__":
 
     testPrompt = "Enumerate HTTP endpoints on http://192.168.157.136:8081"
     result = asyncio.run(agentRunner(prompt=testPrompt))
-
-    print(f"[FINAL RESULT]:\n\n{result}")

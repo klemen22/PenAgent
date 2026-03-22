@@ -5,7 +5,6 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import InMemorySaver
 import logging
 from pathlib import Path
 import re
@@ -13,7 +12,8 @@ import re
 load_dotenv()
 
 from MCP_tools.nmap.nmap_toolV2 import nmap_scan, nmapInput
-from Orchestrator.memory.agent_output import AgentOutput, HostMemory
+from Orchestrator.memory.agent_output import AgentOutput, HostMemory, portInfo
+from metadata.metadata_logger import setupMetadataLogger, logMetadata, logTotalTokens
 
 # TODO: check if async is really needed or if you can convert code back to sync?
 
@@ -22,12 +22,16 @@ from Orchestrator.memory.agent_output import AgentOutput, HostMemory
 # ------------------------------------------------------------------------------- #
 
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
+TOKEN_WINDOW_SIZE = os.getenv(key="TOKEN_WINDOW_SIZE", default=4096)
+AGENT_NAME = "nmap_agent"
+LLM_MODEL = os.getenv(key="LLM_MODEL", default="huihui_ai/qwen3-abliterated:8b")
 
 llm = ChatOllama(
-    name="nmap_agent",
-    model="huihui_ai/qwen3-abliterated:8b",
+    name=AGENT_NAME,
+    model=LLM_MODEL,
     base_url=LM_API,
     temperature=0.2,
+    num_ctx=TOKEN_WINDOW_SIZE,
     format=None,
 )
 
@@ -39,6 +43,11 @@ logCount = 0
 for log in os.listdir(logDir):
     if os.path.isfile(os.path.join(logDir, log)):
         logCount += 1
+
+with open("MCP_tools/nmap/nmap_allowed_arguments.json") as f:
+    ALLOWED_ARGS = f.read()
+
+setupMetadataLogger(AGENT_NAME)
 
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
@@ -66,21 +75,21 @@ class agentFeedback(BaseModel):
 
 
 class nmapToolCall(BaseModel):
-    target: str = Field(default="")
-    scan_type: str = Field(
-        default="", description="This field is meant for scan parameters."
-    )
+    target: str
+    scan_type: str
     ports: Optional[str] = Field(default="")
     additional_args: Optional[str] = Field(default="")
 
     reasoning: str = Field(..., description="Agent's reasoning for specific tool call.")
 
 
+"""
 class portInfo(BaseModel):
     port: Optional[int] = Field(default=None)
     service: Optional[str] = Field(default=None)
     version: Optional[str] = Field(default=None)
     state: str = Field(default="")
+"""
 
 
 class hostDiscovery(BaseModel):
@@ -142,6 +151,8 @@ class nmapAgentState(BaseModel):
 
     summary: Optional[str] = Field(default=None)
 
+    agent_output: AgentOutput = Field(default_factory=AgentOutput)
+
     fail_reason: Optional[str] = Field(default="")
     fail: bool = Field(default=False)
 
@@ -151,6 +162,52 @@ class nmapAgentState(BaseModel):
 # ------------------------------------------------------------------------------- #
 #                                 Agent nodes                                     #
 # ------------------------------------------------------------------------------- #
+
+
+async def initNode(state: nmapAgentState):
+    logData(message="[INIT NODE] -> enter node")
+
+    targets = extractTargets(state.objective)
+
+    if not targets:
+        logData(message="[INIT NODE] -> no targets detected -> host discovery required")
+        return {
+            "decision": "plan",
+        }
+
+    cidrTargets = [target for target in targets if "/" in target]
+    ipTargets = [target for target in targets if "/" not in target]
+
+    if cidrTargets:
+        logData("[INIT NODE] -> CIDR detected -> discovery still required")
+        return {
+            "decision": "plan",
+        }
+
+    for ip in ipTargets:
+        if ip not in state.host_memory:
+
+            state.host_memory[ip] = hostMemory(
+                ip=ip,
+                status="alive",
+            )
+
+            state.discovered_hosts.append(ip)
+
+    state.host_discovery.done = True
+
+    logData(
+        f"[INIT NODE] -> skipping host discovery, found following hosts: {ipTargets}"
+    )
+
+    return {
+        "host_memory": state.host_memory,
+        "discovered_hosts": state.discovered_hosts,
+        "host_discovery": state.host_discovery,
+        "decision": "plan",
+    }
+
+
 async def planningNode(state: nmapAgentState):
     logData(message="[PLANNING NODE] -> enter node")
 
@@ -204,7 +261,11 @@ async def planningNode(state: nmapAgentState):
     You are working on ONLY this IP address.
     Do NOT consider any other addresses.
     
-    For each step return JSON:
+    Return a valid JSON:
+    - reasoning
+    - steps list
+    
+    Inside setps list for each step return:
     - description
     - target
     - scan_type
@@ -221,10 +282,16 @@ async def planningNode(state: nmapAgentState):
     for attempt in range(retries):
 
         try:
-            outputPlan = await llm.with_structured_output(nmapOutputPlan).ainvoke(
-                finalPrompt
-            )
+            outputPlanFull = await llm.with_structured_output(
+                nmapOutputPlan, include_raw=True
+            ).ainvoke(finalPrompt)
+
+            outputPlan = outputPlanFull["parsed"]
+            outPutPlanRaw = outputPlanFull["raw"]
+
+            logMetadata(agent_name=AGENT_NAME, metadata=outPutPlanRaw.response_metadata)
             logData(message=f"[PLANNING NODE] -> created new plan: {outputPlan}")
+
             currentMemory.plan = outputPlan.steps
             currentMemory.step_index = 0
             logData(message=f"[PLANNING NODE -> exit node")
@@ -265,10 +332,6 @@ async def planningNode(state: nmapAgentState):
 async def selectToolCall(state: nmapAgentState):
     logData(message="[TOOL CALL NODE] -> enter node")
 
-    # TODO: add allowed arguments
-    with open("MCP_tools/nmap/nmap_allowed_arguments.json") as f:
-        allowedArguments = f.read()
-
     # check host discovery
     hostDiscovery = state.host_discovery
     if not hostDiscovery.done:
@@ -279,10 +342,10 @@ async def selectToolCall(state: nmapAgentState):
         Your current objective:
         {state.objective}
         
-        First you must perform a host discovery phase.
+        If no hosts are known yet you must perform host discovery.
         
         Available nmap options for host discovery:
-        {allowedArguments}
+        {ALLOWED_ARGS}
         
         Decide:
             - which options are appropriate
@@ -331,7 +394,15 @@ async def selectToolCall(state: nmapAgentState):
             hostDiscovery.replan_flag = False
             hostDiscovery.replan_reason = ""
 
-        toolCall = await llm.with_structured_output(nmapToolCall).ainvoke(finalPrompt)
+        toolCallFull = await llm.with_structured_output(
+            nmapToolCall, include_raw=True
+        ).ainvoke(finalPrompt)
+
+        toolCall = toolCallFull["parsed"]
+        toolCallRaw = toolCallFull["raw"]
+
+        logMetadata(agent_name=AGENT_NAME, metadata=toolCallRaw.response_metadata)
+        logData(f"[SELECT TOOL CALL] -> raw produced tool call: {toolCall}")
         logData(
             message=f"[SELECT TOOL CALL] -> reasoning for current tool call: {toolCall.reasoning}"
         )
@@ -378,7 +449,7 @@ async def selectToolCall(state: nmapAgentState):
     {currentHostMemory.last_tool_output}
     
     Available nmap options:
-    {allowedArguments}
+    {ALLOWED_ARGS}
     
     Last feedback:
     {currentHostMemory.feedback if currentHostMemory.feedback else ""}
@@ -407,12 +478,46 @@ async def selectToolCall(state: nmapAgentState):
     }}
     """
 
-    toolCall = await llm.with_structured_output(nmapToolCall).ainvoke(prompt)
-    currentHostMemory.currentToolCall = toolCall
+    retries = 2
 
-    logData(
-        message=f"[SELECT TOOL CALL] -> reasoning for current tool call: {toolCall.reasoning}"
-    )
+    for retry in range(retries):
+
+        toolCallFull = await llm.with_structured_output(
+            nmapToolCall, include_raw=True
+        ).ainvoke(prompt)
+
+        toolCall = toolCallFull["parsed"]
+        toolCallRaw = toolCallFull["raw"]
+
+        # currentHostMemory.currentToolCall = toolCall
+
+        logMetadata(agent_name=AGENT_NAME, metadata=toolCallRaw.response_metadata)
+        logData(f"[SELECT TOOL CALL] -> raw produced tool call: {toolCall}")
+        logData(
+            message=f"[SELECT TOOL CALL] -> reasoning for current tool call: {toolCall.reasoning}"
+        )
+
+        if validateToolCall(toolCall=toolCall):
+            logData(f"[SELECT TOOL CALL] -> tool call was validated!")
+            currentHostMemory.currentToolCall = toolCall
+            break
+
+    if retry >= 2:
+        logData(
+            message=f"[SELECT TOOL CALL] -> agent couldn't create a valid tool call in {retry} tries"
+        )
+
+        logData(message=f"[SELECT TOOL CALL] -> replan is needed to fix agent failure!")
+
+        currentHostMemory.replan_count += 1
+        currentHostMemory.replan_flag = True
+        currentHostMemory.replan_reason = f"Agent didn't create a valid tool call in {retry} tries. Last tool call created:\n\n{toolCall}\nTry to resolve the problem."
+
+        return {
+            "decision": "replan",
+            "host_memory": state.host_memory,
+        }
+
     logData(message=f"[SELECT TOOL CALL] -> exit node")
 
     return {
@@ -642,8 +747,16 @@ async def evaluateNode(state: nmapAgentState):
     - reasoning
     """
 
-    feedback = await llm.with_structured_output(agentFeedback).ainvoke(prompt)
+    feedbackFull = await llm.with_structured_output(
+        agentFeedback, include_raw=True
+    ).ainvoke(prompt)
+
+    feedback = feedbackFull["parsed"]
+    feedbackRaw = feedbackFull["raw"]
+
     currentMemory.feedback = feedback
+
+    logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
 
     state.iteration += 1
     if state.iteration >= state.max_iteration:
@@ -736,10 +849,13 @@ async def outputNode(state: nmapAgentState):
 
     logData(message="[OUTPUT NODE] -> generating summary")
     response = await llm.ainvoke(prompt)
+    logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
+    # end of metadata saving
+    logTotalTokens(agent_name=AGENT_NAME)
     state.summary = response.content
+    logData(message="[OUTPUT NODE] -> exit node - summary done")
 
     if state.fail:
-        logData(message="[OUTPUT NODE] -> exit node - summary done")
         return {
             "agent_output": AgentOutput(
                 agent_name="nmap",
@@ -750,8 +866,6 @@ async def outputNode(state: nmapAgentState):
             )
         }
     else:
-        logData(message="[OUTPUT NODE] -> exit node - summary done")
-
         hosts = {
             key: HostMemory(
                 ip=value.ip,
@@ -762,13 +876,15 @@ async def outputNode(state: nmapAgentState):
             for key, value in state.host_memory.items()
         }
 
-        return AgentOutput(
-            agent_name="nmap",
-            success=True,
-            discovered_hosts=state.discovered_hosts,
-            host_memory=hosts,
-            summary=state.summary,
-        )
+        return {
+            "agent_output": AgentOutput(
+                agent_name="nmap",
+                success=True,
+                discovered_hosts=state.discovered_hosts,
+                host_memory=hosts,
+                summary=state.summary,
+            )
+        }
 
 
 # ------------------------------------------------------------------------------- #
@@ -776,9 +892,25 @@ async def outputNode(state: nmapAgentState):
 # ------------------------------------------------------------------------------- #
 
 
+def extractTargets(prompt: str):
+
+    cidr = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}\b", prompt)
+    ips = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", prompt)
+
+    return cidr + ips
+
+
+def validateToolCall(toolCall: nmapToolCall):
+    # TODO: expand this function later for more detailed check
+    if toolCall.target == "" or toolCall.scan_type == "":
+        return False
+    else:
+        return True
+
+
 def setupLogger():
     logFile = logDir / f"nmap_agent_log{logCount}.log"
-    logger = logging.getLogger("nmap_agent")
+    logger = logging.getLogger("nmap_agent_log")
     logger.setLevel(logging.INFO)
 
     fileHandler = logging.FileHandler(logFile, mode="w")
@@ -790,7 +922,7 @@ def setupLogger():
 
 
 def logData(message: str):
-    logging.getLogger("nmap_agent").info(message)
+    logging.getLogger("nmap_agent_log").info(message)
 
 
 def getCurrentHost(state: nmapAgentState) -> hostMemory:
@@ -847,6 +979,7 @@ def nmapBuilder():
     # graph nodes
     # -------------------------------
 
+    workflow.add_node("init_node", initNode)
     workflow.add_node("planning_node", planningNode)
     workflow.add_node("tool_call_node", selectToolCall)
     workflow.add_node("execute_tool_node", toolExecuteNode)
@@ -857,7 +990,8 @@ def nmapBuilder():
     # -------------------------------
     # graph edges
     # -------------------------------
-    workflow.add_edge(START, "planning_node")
+    workflow.add_edge(START, "init_node")
+    workflow.add_edge("init_node", "planning_node")
     workflow.add_conditional_edges(
         "planning_node",
         retrieveCurrentDecision,
@@ -920,14 +1054,9 @@ async def agentRunner(prompt):
     state = nmapAgentState()
     state.objective = prompt
 
-    result = await graph.ainvoke(state.model_dump())
+    result = await graph.ainvoke(state.model_dump(), {"recursion_limit": 1000})
 
-    return {
-        "summary": result.get("summary").content if result.get("summary") else "",
-        "hosts": {
-            ip: host.model_dump() for ip, host in result.get("host_memory", {}).items()
-        },
-    }
+    print(f"[FINAL RESULT]:\n\n{result}")
 
 
 # ------------------------------------------------------------------------------- #
@@ -940,5 +1069,3 @@ if __name__ == "__main__":
 
     testPrompt = "Position yourself in the network 192.168.157.0 and discover all relevant hosts."
     result = asyncio.run(agentRunner(prompt=testPrompt))
-
-    print(f"[FINAL RESULT]:\n\n{result}")

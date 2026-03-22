@@ -7,12 +7,15 @@ from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 import json
 import logging
+from urllib.parse import urlparse
 from pathlib import Path
 
 load_dotenv()
 
 from MCP_tools.sqlmap.sqlmap_tool import sqlmap_scan, sqlmapConfig
 from Orchestrator.memory.agent_output import AgentOutput, vulnerability
+from metadata.metadata_logger import setupMetadataLogger, logMetadata, logTotalTokens
+from MCP_tools.sqlmap.sqlmap_data_manager import retrieveData, deleteHistory
 
 # TODO: check if async is really needed or if you can convert code back to sync?
 # TODO: add fallback and error handling
@@ -22,12 +25,16 @@ from Orchestrator.memory.agent_output import AgentOutput, vulnerability
 # ------------------------------------------------------------------------------- #
 
 LM_API = os.getenv(key="OLLAMA_API", default="http://127.0.0.1:11434")
+TOKEN_WINDOW_SIZE = os.getenv(key="TOKEN_WINDOW_SIZE", default=4096)
+AGENT_NAME = "sqlmap_agent"
+LLM_MODEL = os.getenv(key="LLM_MODEL", default="huihui_ai/qwen3-abliterated:8b")
 
 llm = ChatOllama(
-    name="sqlmap_agent",
-    model="huihui_ai/qwen3-abliterated:8b",
+    name=AGENT_NAME,
+    model=LLM_MODEL,
     base_url=LM_API,
     temperature=0.2,
+    num_ctx=TOKEN_WINDOW_SIZE,
     format=None,
 )
 
@@ -41,7 +48,11 @@ for log in os.listdir(logDir):
     if os.path.isfile(os.path.join(logDir, log)):
         logCount += 1
 
+with open("MCP_tools\sqlmap\sqlmap_allowed_arguments.json") as f:
+    ALLOWED_ARGS = f.read()
 
+
+setupMetadataLogger(agent_name=AGENT_NAME)
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
 # ------------------------------------------------------------------------------- #
@@ -118,6 +129,7 @@ class attackVectorMemory(BaseModel):
 
 class sqlmapAgentState(BaseModel):
     objective: str = Field(default="", description="Current agent objective.")
+    target: Optional[str] = Field(default=None)
 
     attack_vectors: List[Dict[str, Any]] = Field(
         default_factory=list,
@@ -134,6 +146,8 @@ class sqlmapAgentState(BaseModel):
     decision: Optional[str] = Field(default=None)
 
     summary: Optional[str] = Field(default=None)
+
+    agent_output: AgentOutput = Field(default_factory=AgentOutput)
 
     # logging
     agent_log: List[str] = Field(default_factory=list)
@@ -152,8 +166,18 @@ async def planningNode(state: sqlmapAgentState):
             key = f"{vector['endpoint']}::{vector['method']}"
             state.vectors_memory[key] = attackVectorMemory(vector_data=vector)
 
+    if not state.target:
+        endpoint = state.attack_vectors[0].get("endpoint", "")
+        parsed = urlparse(endpoint)
+
+        state.target = parsed.hostname
+        print(f"[SAVED TARGET]: {state.target}")
+
     if state.vector_index >= len(state.attack_vectors):
-        return {"decision": "stop"}
+        return {
+            "decision": "stop",
+            "target": state.target,
+        }
 
     currentMemory = getCurrentVector(state=state)
 
@@ -161,7 +185,10 @@ async def planningNode(state: sqlmapAgentState):
         log_data(
             state=state, message=f"[PLANNING NODE] -> exit node (all vectors are done)"
         )
-        return {"decision": "continue"}
+        return {
+            "decision": "continue",
+            "target": state.target,
+        }
 
     print("\n[PLANNING]\n")
 
@@ -211,16 +238,24 @@ async def planningNode(state: sqlmapAgentState):
     for attempt in range(retries):
 
         try:
-            outputPlan = await llm.with_structured_output(agentPlanOutput).ainvoke(
-                prompt
-            )
+            outputPlanFull = await llm.with_structured_output(
+                agentPlanOutput, include_raw=True
+            ).ainvoke(prompt)
+
+            outputPlan = outputPlanFull["parsed"]
+            outputPlanRaw = outputPlanFull["raw"]
 
             log_data(state, f"[PLANNING]: {outputPlan.reasoning}")
+            logMetadata(agent_name=AGENT_NAME, metadata=outputPlanRaw.response_metadata)
 
             currentMemory.plan = outputPlan.steps
             currentMemory.step_index = 0
             log_data(state=state, message=f"[PLANNING NODE] -> exit node")
-            return {"vectors_memory": state.vectors_memory, "decision": "continue"}
+            return {
+                "vectors_memory": state.vectors_memory,
+                "decision": "continue",
+                "target": state.target,
+            }
 
         except Exception as e:
 
@@ -237,14 +272,15 @@ async def planningNode(state: sqlmapAgentState):
     currentMemory.plan = []
     currentMemory.step_index = 0
     log_data(state=state, message=f"[PLANNING NODE] -> exit node")
-    return {"vectors_memory": state.vectors_memory, "decision": "stop"}
+    return {
+        "vectors_memory": state.vectors_memory,
+        "decision": "stop",
+        "target": state.target,
+    }
 
 
 async def selectActionNode(state: sqlmapAgentState):
     log_data(state=state, message=f"[SELECT ACTION NODE] -> enter node")
-
-    with open("MCP_tools\sqlmap\sqlmap_allowed_arguments.json") as f:
-        allowedArguments = f.read()
 
     currentMemory = getCurrentVector(state=state)
     vector = currentMemory.vector_data
@@ -276,7 +312,7 @@ async def selectActionNode(state: sqlmapAgentState):
     {currentMemory.analysis.reasoning if currentMemory.analysis else "None"}
 
     Available sqlmap options:
-    {allowedArguments}
+    {ALLOWED_ARGS}
     
     IMPORTANT:
     Do NOT modify parameter values.
@@ -296,13 +332,19 @@ async def selectActionNode(state: sqlmapAgentState):
     - High risk exploitation allowed only if vulnerability confirmed.
     """
 
-    selection = await llm.with_structured_output(sqlmapToolSelection).ainvoke(prompt)
+    selectionFull = await llm.with_structured_output(
+        sqlmapToolSelection, include_raw=True
+    ).ainvoke(prompt)
+
+    selection = selectionFull["parsed"]
+    selectionRaw = selectionFull["raw"]
 
     # print("\n[SELECT REASONING]")
     # print(selection.reasoning)
 
     log_data(state, message=f"[SELECT REASONING]: {selection.reasoning}")
     log_data(state=state, message=f"[SELECT ACTION NODE -> exit node]")
+    logMetadata(agent_name=AGENT_NAME, metadata=selectionRaw.response_metadata)
 
     currentMemory.selected_command = selection
 
@@ -449,20 +491,23 @@ async def analyzeNode(state: sqlmapAgentState):
     Return JSON:
     - vulnerability_found
     - exploitation_possible
-    - confidence (0-1)
+    - confidence (value MUST BE in range: 0.0 - 1.0)
     - reasoning
     """
 
-    # response = await llm.ainvoke(prompt)
-    # feedback = agentFeedback.model_validate_json(response.content)
+    feedbackFull = await llm.with_structured_output(
+        agentFeedback, include_raw=True
+    ).ainvoke(prompt)
 
-    feedback = await llm.with_structured_output(agentFeedback).ainvoke(prompt)
+    feedback = feedbackFull["parsed"]
+    feedbackRaw = feedbackFull["raw"]
     # print(f"Feedback:\n {feedback.reasoning}")
     # print(f"Confidence: {feedback.confidence}")
 
     # log_data(state=state, message="[ANALYZE]")
     log_data(state=state, message=f"Reasoning: {feedback.reasoning}")
     log_data(state=state, message=f"Confidence: {feedback.confidence}")
+    logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
 
     currentMemory.analysis = feedback
     currentMemory.confidence = feedback.confidence
@@ -535,6 +580,7 @@ async def outputNode(state: sqlmapAgentState):
     log_data(state=state, message="[OUTPUT NODE] -> enter node")
 
     # TODO: Add fallback and fail summary!
+    retrieveData(targetAddress=state.target)
 
     vectors = json.dumps(
         {k: v.model_dump() for k, v in state.vectors_memory.items()}, indent=4
@@ -556,7 +602,10 @@ async def outputNode(state: sqlmapAgentState):
     response = await llm.ainvoke(prompt)
     state.summary = response.content
 
+    logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
     log_data(state=state, message="[OUTPUT NODE] -> exit node - summary done")
+    logTotalTokens(agent_name=AGENT_NAME)
+
     return {
         "agent_output": AgentOutput(
             agent_name="sqlmap",
@@ -632,7 +681,7 @@ def planningNodeRouting(state: sqlmapAgentState):
 
 def setupLogger():
     logFile = logDir / f"sqlmap_agent_log{logCount}.log"
-    logger = logging.getLogger("sqlmap_agent")
+    logger = logging.getLogger("sqlmap_agent_log")
     logger.setLevel(logging.INFO)
 
     fileHandler = logging.FileHandler(logFile, mode="w")
@@ -645,7 +694,7 @@ def setupLogger():
 
 def log_data(state, message: str):
     state.agent_log.append(message)
-    logging.getLogger("sqlmap_agent").info(message)
+    logging.getLogger("sqlmap_agent_log").info(message)
 
 
 def getCurrentVector(state: sqlmapAgentState) -> attackVectorMemory:
@@ -771,11 +820,9 @@ async def agentRunner(prompt: str, endpoints):
     state.objective = prompt
     state.attack_vectors = endpoints
 
-    result = await graph.ainvoke(state.model_dump())
+    result = await graph.ainvoke(state.model_dump(), {"recursion_limit": 1000})
 
-    return {
-        "summary": result.summary,
-    }
+    print(f"[FINAL RESULT]:\n\n{result}")
 
 
 """
@@ -868,7 +915,7 @@ if __name__ == "__main__":
     print("#" + "-" * 10 + "SQLmap_agent_test" + 10 * "-" + "#\n")
     print("type 'exit' to close the conversation\n")
 
-    with open("MCP_tools\gobuster\crawler_test_dump3.json", "r") as f:
+    with open("MCP_tools\gobuster\crawler_final_dump1.json", "r") as f:
         endpoints = json.load(f)
 
     result = asyncio.run(

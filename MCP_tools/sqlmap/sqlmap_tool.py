@@ -4,7 +4,8 @@ from langchain.tools import tool
 from dotenv import load_dotenv
 import os
 import asyncio
-from sqlmapOutputParser import sqlmapOutputParser
+
+# from sqlmapOutputParser import sqlmapOutputParser
 
 try:
     from MCP_tools.mcp_server import KaliToolsClient, setup_mcp_server
@@ -118,7 +119,7 @@ def buildAdditionalArgs(config: sqlmapConfig) -> str:
 #                                       Tool test                                #
 # -------------------------------------------------------------------------------#
 
-
+"""
 # function for test tool call
 async def sqlmapTest():
     print("\n" + "-" * 20)
@@ -141,3 +142,4 @@ async def sqlmapTest():
 
 if __name__ == "__main__":
     asyncio.run(sqlmapTest())
+"""
