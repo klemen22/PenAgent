@@ -1,6 +1,6 @@
 # universal tool agent output schema
 from pydantic import BaseModel, Field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal
 
 # ---------------------
 # nmap info - basic host info
@@ -59,7 +59,7 @@ class vulnerability(BaseModel):
 
 
 class AgentOutput(BaseModel):
-    agent_name: str = Field(default="")
+    agent_name: Optional[Literal["nmap", "sqlmap", "gobuster"]] = Field(default=None)
 
     summary: Optional[str] = Field(default=None, description="Tool agent summary.")
 

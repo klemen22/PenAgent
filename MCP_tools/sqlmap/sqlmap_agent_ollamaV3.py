@@ -33,7 +33,7 @@ llm = ChatOllama(
     name=AGENT_NAME,
     model=LLM_MODEL,
     base_url=LM_API,
-    temperature=0.2,
+    temperature=0.1,
     num_ctx=TOKEN_WINDOW_SIZE,
     format=None,
 )

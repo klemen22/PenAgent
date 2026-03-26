@@ -1,179 +1,103 @@
-2026-03-22 12:29:46,223 | INFO | [INIT NODE] -> enter node
-2026-03-22 12:29:46,223 | INFO | [INIT NODE] -> CIDR detected -> discovery still required
-2026-03-22 12:29:46,223 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:29:46,223 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
-2026-03-22 12:29:46,224 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:29:50,904 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.0/24' scan_type='-sn' ports='' additional_args='' reasoning='Performing host discovery to identify live hosts in the subnet before scanning for open ports.'
-2026-03-22 12:29:50,904 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing host discovery to identify live hosts in the subnet before scanning for open ports.
-2026-03-22 12:29:50,904 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:29:50,905 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:29:55,406 | INFO | [EXECUTE TOOL] -> exit node - discovery done
-2026-03-22 12:29:55,407 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:29:55,407 | INFO | [PARSE OUTPUT] -> discovered hosts: ['192.168.157.1', '192.168.157.2', '192.168.157.136', '192.168.157.254', '192.168.157.137']
-2026-03-22 12:29:55,407 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:29:55,408 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:30:02,248 | INFO | [PLANNING NODE] -> created new plan: reasoning="The scan plan focuses on the known alive host 192.168.157.1. First, a fast port scan (-F) identifies open ports efficiently. Then service detection (-sV) determines the applications/services running on those ports, providing actionable insights about the host's configuration." steps=[nmapPlanStep(description='Perform a fast port scan to identify open ports on the target host.', target='192.168.157.1', scan_type='port scan'), nmapPlanStep(description='Detect services running on open ports to identify application types and versions.', target='192.168.157.1', scan_type='service detection')]
-2026-03-22 12:30:02,248 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:30:02,249 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:30:06,150 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-F' ports='' additional_args='' reasoning='Using the -F (fast) scan option to quickly identify open ports on the known alive host. This scan type uses the most common ports and minimizes scan time.'
-2026-03-22 12:30:06,150 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Using the -F (fast) scan option to quickly identify open ports on the known alive host. This scan type uses the most common ports and minimizes scan time.
-2026-03-22 12:30:06,151 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:30:06,151 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:30:06,151 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:30:09,945 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:30:09,946 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:30:09,947 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
-2026-03-22 12:30:09,947 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:30:09,947 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:30:19,610 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:30:19,611 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:30:37,677 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sV' ports='' additional_args='' reasoning="Using service version detection (-sV) to identify applications and versions even if ports are open. This scan will probe open ports for service details, building on the previous fast scan's confirmation of host activity."
-2026-03-22 12:30:37,677 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Using service version detection (-sV) to identify applications and versions even if ports are open. This scan will probe open ports for service details, building on the previous fast scan's confirmation of host activity.
-2026-03-22 12:30:37,677 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:30:37,677 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:30:37,678 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:30:59,607 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:30:59,608 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:30:59,608 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
-2026-03-22 12:30:59,608 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:30:59,608 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:31:03,661 | INFO | [EVALUATE NODE] -> exit node (too low confidence, replan is needed)
-2026-03-22 12:31:03,661 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:31:11,163 | INFO | [PLANNING NODE] -> created new plan: reasoning="The previous service detection scan failed to identify any services because all ports were in ignored states. This likely means the host's ports are filtered or no response was received. A targeted port scan is needed first to identify open ports, followed by service detection on those ports to improve confidence in the results." steps=[nmapPlanStep(description='Perform a TCP SYN scan to identify open ports on the target host.', target='192.168.157.1', scan_type='syn'), nmapPlanStep(description='Conduct service detection on ports confirmed as open during the initial scan.', target='192.168.157.1', scan_type='service')]
-2026-03-22 12:31:11,163 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:31:11,163 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:31:24,833 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sS' ports='' additional_args='' reasoning='Perform a TCP SYN scan (-sS) to identify open ports without completing the TCP handshake. The previous -F and -sV scans found no responses, so a SYN scan will help determine if any ports are open despite the lack of service detection.'
-2026-03-22 12:31:24,834 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Perform a TCP SYN scan (-sS) to identify open ports without completing the TCP handshake. The previous -F and -sV scans found no responses, so a SYN scan will help determine if any ports are open despite the lack of service detection.
-2026-03-22 12:31:24,834 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:31:24,834 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:31:24,834 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:31:46,697 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:31:46,699 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:31:46,699 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
-2026-03-22 12:31:46,699 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:31:46,700 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:31:53,428 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:31:53,428 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:32:05,171 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sV' ports='' additional_args='' reasoning='Performing service version detection (-sV) to identify services running on any open ports, even though initial scans showed no open ports. This will confirm if any services are active despite the firewall filtering.'
-2026-03-22 12:32:05,171 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing service version detection (-sV) to identify services running on any open ports, even though initial scans showed no open ports. This will confirm if any services are active despite the firewall filtering.
-2026-03-22 12:32:05,171 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:32:05,171 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:32:05,172 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:32:27,077 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:32:27,078 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:32:27,079 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
-2026-03-22 12:32:27,079 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:32:27,079 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:32:32,963 | INFO | [EVALUATE NODE] -> exit node - moving to next host
-2026-03-22 12:32:32,964 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:32:42,685 | INFO | [PLANNING NODE] -> created new plan: reasoning='The scan plan focuses on the known alive host (192.168.157.2) using TCP connect scan (-sT) to efficiently identify open ports, followed by service version detection (-sV) to determine running services. This approach balances speed and detail while isolating the target IP.' steps=[nmapPlanStep(description='Perform a TCP connect scan to identify open ports', target='192.168.157.2', scan_type='-sT'), nmapPlanStep(description='Detect services and versions on open ports', target='192.168.157.2', scan_type='-sV')]
-2026-03-22 12:32:42,685 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:32:42,685 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:32:45,966 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.2' scan_type='-sT' ports='' additional_args='' reasoning='Performing TCP connect scan (-sT) to identify open ports on the target host as per the current plan step.'
-2026-03-22 12:32:45,966 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing TCP connect scan (-sT) to identify open ports on the target host as per the current plan step.
-2026-03-22 12:32:45,966 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:32:45,966 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:32:45,967 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:32:46,664 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:32:46,665 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:32:46,665 | INFO | [PARSE OUTPUT] -> host 192.168.157.2 open ports: 1
-2026-03-22 12:32:46,666 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:32:46,666 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:32:50,574 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:32:50,575 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:32:59,025 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.2' scan_type='-sV' ports='' additional_args='' reasoning="Performing service version detection (-sV) to identify the specific version of the domain service running on the open port 53/tcp. This will provide detailed information about the service's version, which is critical for further analysis."
-2026-03-22 12:32:59,025 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing service version detection (-sV) to identify the specific version of the domain service running on the open port 53/tcp. This will provide detailed information about the service's version, which is critical for further analysis.
-2026-03-22 12:32:59,025 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:32:59,025 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:32:59,026 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:33:05,986 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:33:05,987 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:33:05,987 | INFO | [PARSE OUTPUT] -> host 192.168.157.2 open ports: 1
-2026-03-22 12:33:05,987 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:33:05,988 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:33:10,930 | INFO | [EVALUATE NODE] -> exit node - moving to next host
-2026-03-22 12:33:10,931 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:33:18,853 | INFO | [PLANNING NODE] -> created new plan: reasoning='The scan will focus exclusively on the target IP 192.168.157.136. First, a port scan will identify open ports, then service detection will determine the applications/services running on those ports. This approach ensures efficient use of resources while gathering comprehensive information about the target.' steps=[nmapPlanStep(description='Perform a TCP connect scan to identify open ports on the target host.', target='192.168.157.136', scan_type='port scan'), nmapPlanStep(description='Detect services and versions running on open ports to identify application protocols.', target='192.168.157.136', scan_type='service detection')]
-2026-03-22 12:33:18,853 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:33:18,854 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:33:22,343 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.136' scan_type='-sT' ports='' additional_args='' reasoning='Performing TCP connect scan (-sT) to identify open ports on the target host. This scan method establishes a full TCP connection, making it reliable for determining open ports without requiring additional parameters.'
-2026-03-22 12:33:22,344 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing TCP connect scan (-sT) to identify open ports on the target host. This scan method establishes a full TCP connection, making it reliable for determining open ports without requiring additional parameters.
-2026-03-22 12:33:22,344 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:33:22,344 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:33:22,344 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:33:23,076 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:33:23,077 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:33:23,077 | INFO | [PARSE OUTPUT] -> host 192.168.157.136 open ports: 3
-2026-03-22 12:33:23,077 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:33:23,078 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:33:26,761 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:33:26,762 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:33:30,693 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.136' scan_type='-sV' ports='' additional_args='' reasoning='Perform service version detection (-sV) on already identified open ports (80, 8081, 8443) to determine specific application protocols and versions.'
-2026-03-22 12:33:30,693 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Perform service version detection (-sV) on already identified open ports (80, 8081, 8443) to determine specific application protocols and versions.
-2026-03-22 12:33:30,693 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:33:30,693 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:33:30,693 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:33:43,628 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:33:43,629 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:33:43,629 | INFO | [PARSE OUTPUT] -> host 192.168.157.136 open ports: 3
-2026-03-22 12:33:43,630 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:33:43,630 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:33:47,898 | INFO | [EVALUATE NODE] -> exit node - moving to next host
-2026-03-22 12:33:47,899 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:33:55,889 | INFO | [PLANNING NODE] -> created new plan: reasoning='The scan is focused on the target IP 192.168.157.254, which is already confirmed as alive. A SYN scan (-sS) will efficiently identify open ports, followed by service detection (-sV) to determine the applications/services running on those ports.' steps=[nmapPlanStep(description='Perform a SYN scan to identify open ports on the target host.', target='192.168.157.254', scan_type='syn'), nmapPlanStep(description='Detect services running on open ports to identify application types.', target='192.168.157.254', scan_type='service detection')]
-2026-03-22 12:33:55,889 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:33:55,889 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:34:01,957 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.254' scan_type='-sS' ports='' additional_args='' reasoning='Performing a TCP SYN scan (-sS) to identify open ports without completing the TCP handshake, which is efficient and stealthy. No specific ports are targeted, so default port scanning behavior will be used.'
-2026-03-22 12:34:01,957 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing a TCP SYN scan (-sS) to identify open ports without completing the TCP handshake, which is efficient and stealthy. No specific ports are targeted, so default port scanning behavior will be used.
-2026-03-22 12:34:01,957 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:34:01,957 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:34:01,958 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:34:23,837 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:34:23,838 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:34:23,839 | INFO | [PARSE OUTPUT] -> host 192.168.157.254 open ports: 0
-2026-03-22 12:34:23,839 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:34:23,839 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:34:30,395 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:34:30,395 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:34:40,211 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.254' scan_type='-sV' ports='' additional_args='' reasoning="Perform service version detection to identify applications even if ports were previously filtered. This scan will attempt to determine the service types running on any open ports, providing more detailed information about the host's services."
-2026-03-22 12:34:40,212 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Perform service version detection to identify applications even if ports were previously filtered. This scan will attempt to determine the service types running on any open ports, providing more detailed information about the host's services.
-2026-03-22 12:34:40,212 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:34:40,212 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:34:40,212 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:35:02,138 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:35:02,139 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:35:02,139 | INFO | [PARSE OUTPUT] -> host 192.168.157.254 open ports: 0
-2026-03-22 12:35:02,139 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:35:02,140 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:35:07,839 | INFO | [EVALUATE NODE] -> exit node - moving to next host
-2026-03-22 12:35:07,840 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:35:17,070 | INFO | [PLANNING NODE] -> created new plan: reasoning="The scan plan begins with a port scan to identify open ports, followed by service detection to determine the services in use. This approach efficiently narrows down the target's exposed services and their versions." steps=[nmapPlanStep(description='Perform a TCP SYN scan to identify open ports on the target host.', target='192.168.157.137', scan_type='port scan'), nmapPlanStep(description='Perform service version detection to identify the applications and versions running on open ports.', target='192.168.157.137', scan_type='service detection')]
-2026-03-22 12:35:17,070 | INFO | [PLANNING NODE -> exit node
-2026-03-22 12:35:17,071 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:35:20,603 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.137' scan_type='-sS' ports='' additional_args='' reasoning='Performing TCP SYN scan (-sS) to identify open ports without completing the TCP handshake, which is efficient and stealthy for port discovery.'
-2026-03-22 12:35:20,603 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing TCP SYN scan (-sS) to identify open ports without completing the TCP handshake, which is efficient and stealthy for port discovery.
-2026-03-22 12:35:20,603 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:35:20,603 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:35:20,604 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:38:20,641 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:38:20,642 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:38:20,642 | INFO | [PARSE OUTPUT] -> host 192.168.157.137 open ports: 0
-2026-03-22 12:38:20,642 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:38:20,643 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:38:24,006 | INFO | [EVALUATE NODE] -> exit node - moving to next step
-2026-03-22 12:38:24,007 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 12:38:38,440 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.137' scan_type='-sV' ports='' additional_args='' reasoning='Performing service version detection (-sV) to identify applications and versions. Since the initial SYN scan timed out, we now attempt service detection directly to gather more detailed information about running services.'
-2026-03-22 12:38:38,440 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing service version detection (-sV) to identify applications and versions. Since the initial SYN scan timed out, we now attempt service detection directly to gather more detailed information about running services.
-2026-03-22 12:38:38,440 | INFO | [SELECT TOOL CALL] -> tool call was validated!
-2026-03-22 12:38:38,441 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 12:38:38,441 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 12:41:19,155 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
-2026-03-22 12:41:19,156 | INFO | [PARSE OUTPUT] -> enter node
-2026-03-22 12:41:19,156 | INFO | [PARSE OUTPUT] -> host 192.168.157.137 open ports: 1
-2026-03-22 12:41:19,156 | INFO | [PARSE OUTPUT] -> exit node
-2026-03-22 12:41:19,157 | INFO | [EVALUATE NODE] -> enter node
-2026-03-22 12:41:24,768 | INFO | [EVALUATE NODE] -> exit node - moving to next host
-2026-03-22 12:41:24,769 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 12:41:24,769 | INFO | [OUTPUT NODE] -> enter node
-2026-03-22 12:41:24,770 | INFO | [OUTPUT NODE] -> generating summary
-2026-03-22 12:41:34,311 | INFO | [OUTPUT NODE] -> exit node - summary done
+2026-03-25 13:03:36,466 | INFO | [INIT NODE] -> enter node
+2026-03-25 13:03:36,466 | INFO | [INIT NODE] -> targets provided by orchestrator: ['192.168.157.0/24']
+2026-03-25 13:03:36,466 | INFO | [INIT NODE] -> network detected ['192.168.157.0/24'] -> discovery required
+2026-03-25 13:03:36,466 | INFO | [PLANNING NODE] -> enter node
+2026-03-25 13:03:36,467 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-25 13:03:36,467 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:03:50,240 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.0/24' scan_type='-sn' ports=[] additional_args=[] reasoning='Host discovery scan to identify active hosts before performing TCP SYN scan'
+2026-03-25 13:03:50,241 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Host discovery scan to identify active hosts before performing TCP SYN scan
+2026-03-25 13:03:50,241 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:03:50,242 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:03:54,740 | INFO | [EXECUTE TOOL] -> exit node - discovery done
+2026-03-25 13:03:54,741 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:03:54,741 | INFO | [PARSE OUTPUT] -> discovered hosts: ['192.168.157.1', '192.168.157.2', '192.168.157.136', '192.168.157.254', '192.168.157.137']
+2026-03-25 13:03:54,741 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:03:54,742 | INFO | [PLANNING NODE] -> enter node
+2026-03-25 13:04:02,992 | INFO | [PLANNING NODE] -> created new plan: reasoning='The scan will focus on the known alive host 192.168.157.1 within the specified subnet. TCP SYN scanning is used to efficiently identify open ports without establishing full connections. Service detection will follow to determine the applications/services running on open ports.' steps=[nmapPlanStep(description='Perform TCP SYN scan to identify open ports on the target host.', target='192.168.157.1'), nmapPlanStep(description='Conduct service detection on open ports to determine the applications/services in use.', target='192.168.157.1')]
+2026-03-25 13:04:02,993 | INFO | [PLANNING NODE -> exit node
+2026-03-25 13:04:02,993 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:04:19,059 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sS' ports=[] additional_args=[] reasoning='Performing TCP SYN scan to identify open ports as per the current plan step.'
+2026-03-25 13:04:19,059 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing TCP SYN scan to identify open ports as per the current plan step.
+2026-03-25 13:04:19,059 | INFO | [SELECT TOOL CALL] -> tool call was validated!
+2026-03-25 13:04:19,059 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:04:19,060 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:04:40,899 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:04:40,900 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:04:40,901 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:04:40,901 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:04:40,903 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:04:48,786 | INFO | [EVALUATE NODE] -> exit node - moving to next step
+2026-03-25 13:04:48,787 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:05:07,494 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sT' ports=[] additional_args=[] reasoning='Trying a TCP connect scan (-sT) to potentially detect open ports that were missed by the SYN scan and focusing on open ports.'
+2026-03-25 13:05:07,494 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Trying a TCP connect scan (-sT) to potentially detect open ports that were missed by the SYN scan and focusing on open ports.
+2026-03-25 13:05:07,494 | INFO | [SELECT TOOL CALL] -> tool call was validated!
+2026-03-25 13:05:07,494 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:05:07,495 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:05:29,228 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:05:29,229 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:05:29,229 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:05:29,229 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:05:29,230 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:05:35,336 | INFO | [EVALUATE NODE] -> exit node (too low confidence, replan is needed)
+2026-03-25 13:05:35,337 | INFO | [PLANNING NODE] -> enter node
+2026-03-25 13:05:43,741 | INFO | [PLANNING NODE] -> created new plan: reasoning='The previous TCP connect scan (-sT) failed to detect open ports, likely due to firewall blocking or no active services. A TCP SYN scan (-sS) is more stealthy and better suited for initial host discovery. If open ports are found, service detection (-sV) will follow to identify running services.' steps=[nmapPlanStep(description='Perform TCP SYN scan to detect open ports and active hosts', target='192.168.157.1'), nmapPlanStep(description='Run service version detection on identified open ports', target='192.168.157.1')]
+2026-03-25 13:05:43,741 | INFO | [PLANNING NODE -> exit node
+2026-03-25 13:05:43,742 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:05:58,527 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sU' ports=[] additional_args=[] reasoning='UDP scan (-sU) can detect services using UDP protocols, which may bypass TCP-based blocking mechanisms. This approach is distinct from previous TCP scans and could reveal hidden services.'
+2026-03-25 13:05:58,527 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: UDP scan (-sU) can detect services using UDP protocols, which may bypass TCP-based blocking mechanisms. This approach is distinct from previous TCP scans and could reveal hidden services.
+2026-03-25 13:06:02,584 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sU' ports=[] additional_args=[] reasoning='UDP scan may detect services that are blocking TCP scans. This approach differs from previous TCP SYN and connect scans.'
+2026-03-25 13:06:02,584 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: UDP scan may detect services that are blocking TCP scans. This approach differs from previous TCP SYN and connect scans.
+2026-03-25 13:06:02,584 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:06:02,585 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:06:24,314 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:06:24,315 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:06:24,316 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:06:24,316 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:06:24,317 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:06:34,026 | INFO | [EVALUATE NODE] -> exit node - moving to next step
+2026-03-25 13:06:34,027 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:06:42,230 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sU' ports=[] additional_args=[] reasoning='UDP scan may reveal services that are not detected by TCP scans, as some services use UDP. This approach avoids re-scanning the same TCP ports and focuses on potential UDP-based services.'
+2026-03-25 13:06:42,230 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: UDP scan may reveal services that are not detected by TCP scans, as some services use UDP. This approach avoids re-scanning the same TCP ports and focuses on potential UDP-based services.
+2026-03-25 13:07:20,679 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sV' ports=[] additional_args=[] reasoning='Attempting service version detection on common ports (22, 80, 443) to identify potential open services despite previous scan results indicating ignored states. This may help detect services that are actively responding but not flagged in initial TCP scans.'
+2026-03-25 13:07:20,679 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Attempting service version detection on common ports (22, 80, 443) to identify potential open services despite previous scan results indicating ignored states. This may help detect services that are actively responding but not flagged in initial TCP scans.
+2026-03-25 13:07:20,679 | INFO | [SELECT TOOL CALL] -> tool call was validated!
+2026-03-25 13:07:20,679 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:07:20,680 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:07:42,649 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:07:42,650 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:07:42,650 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:07:42,650 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:07:42,651 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:07:48,600 | INFO | [EVALUATE NODE] -> exit node (too low confidence, replan is needed)
+2026-03-25 13:07:48,600 | INFO | [PLANNING NODE] -> enter node
+2026-03-25 13:07:55,966 | INFO | [PLANNING NODE] -> created new plan: reasoning='The initial scan used service detection (-sV) on all 1000 ports, but the results showed all ports were filtered/ignored, indicating no open ports. This makes service detection ineffective. We need to first perform a targeted TCP SYN scan on common ports (1-1024) to identify potential open ports before attempting service detection. This approach reduces false negatives and focuses on likely candidates.' steps=[nmapPlanStep(description='Perform TCP SYN scan on common ports (1-1024) to identify open ports', target='192.168.157.1'), nmapPlanStep(description='Conduct service detection on ports confirmed open by the SYN scan', target='192.168.157.1')]
+2026-03-25 13:07:55,966 | INFO | [PLANNING NODE -> exit node
+2026-03-25 13:07:55,966 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:08:15,999 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sU' ports=[] additional_args=[] reasoning='UDP scan may reveal services that are not responding to TCP scans. Common ports are targeted to maximize coverage of potential open services.'
+2026-03-25 13:08:15,999 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: UDP scan may reveal services that are not responding to TCP scans. Common ports are targeted to maximize coverage of potential open services.
+2026-03-25 13:08:36,254 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sU' ports=[] additional_args=[] reasoning='UDP scan can reveal services that do not respond to TCP SYN or connect scans. Using --top-ports 100 ensures common UDP ports are checked, and --open focuses on ports that are definitely open.'
+2026-03-25 13:08:36,254 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: UDP scan can reveal services that do not respond to TCP SYN or connect scans. Using --top-ports 100 ensures common UDP ports are checked, and --open focuses on ports that are definitely open.
+2026-03-25 13:08:36,254 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:08:36,255 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:08:58,245 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:08:58,247 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:08:58,247 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:08:58,247 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:08:58,248 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:09:09,659 | INFO | [EVALUATE NODE] -> exit node - moving to next step
+2026-03-25 13:09:09,659 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-25 13:09:18,157 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.157.1' scan_type='-sS -sV' ports=[] additional_args=[] reasoning='Targeting common service ports (22, 80, 443, 3389) for SYN scan and service detection to identify potential open services despite previous filtered results.'
+2026-03-25 13:09:18,157 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Targeting common service ports (22, 80, 443, 3389) for SYN scan and service detection to identify potential open services despite previous filtered results.
+2026-03-25 13:09:18,157 | INFO | [SELECT TOOL CALL] -> tool call was validated!
+2026-03-25 13:09:18,157 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-25 13:09:18,158 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-25 13:09:40,074 | INFO | [TOOL EXECUTE] -> exit node - tool call was successful: True
+2026-03-25 13:09:40,075 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-25 13:09:40,075 | INFO | [PARSE OUTPUT] -> host 192.168.157.1 open ports: 0
+2026-03-25 13:09:40,075 | INFO | [PARSE OUTPUT] -> exit node
+2026-03-25 13:09:40,076 | INFO | [EVALUATE NODE] -> enter node
+2026-03-25 13:09:46,787 | INFO | [EVALUATE NODE] -> exit node (too low confidence, replan is needed)
+2026-03-25 13:09:46,788 | INFO | [PLANNING NODE] -> enter node
+2026-03-25 13:10:03,767 | INFO | [PLANNING NODE] -> created new plan: reasoning='The initial SYN scan on 192.168.157.1 failed to detect open ports, resulting in low confidence. To improve accuracy, we will refine the port scan to focus on common service ports (e.g., 20-100) and use a more targeted approach. If open ports are found, service detection (-sV) will be performed on those specific ports to ensure actionable results.' steps=[nmapPlanStep(description='Perform a targeted TCP SYN scan on common service ports (20-100) to identify potential open ports.', target='192.168.157.1'), nmapPlanStep(description='Conduct service detection (-sV) on any confirmed open ports from the refined scan to identify running services.', target='192.168.157.1')]
+2026-03-25 13:10:03,767 | INFO | [PLANNING NODE -> exit node
+2026-03-25 13:10:03,768 | INFO | [TOOL CALL NODE] -> enter node

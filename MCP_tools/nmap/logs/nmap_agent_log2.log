@@ -1,8 +1,0 @@
-2026-03-22 11:02:17,384 | INFO | [PLANNING NODE] -> enter node
-2026-03-22 11:02:17,384 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
-2026-03-22 11:02:17,385 | INFO | [TOOL CALL NODE] -> enter node
-2026-03-22 11:02:22,028 | INFO | [SELECT TOOL CALL] -> raw produced tool call: target='192.168.1.0/24' scan_type='-sn' ports='' additional_args='' reasoning='Performing a ping scan (-sn) to discover active hosts in the subnet without initiating port scans, which is efficient for initial network reconnaissance.'
-2026-03-22 11:02:22,028 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing a ping scan (-sn) to discover active hosts in the subnet without initiating port scans, which is efficient for initial network reconnaissance.
-2026-03-22 11:02:22,028 | INFO | [SELECT TOOL CALL] -> exit node
-2026-03-22 11:02:22,029 | INFO | [EXECUTE TOOL] -> enter node
-2026-03-22 11:05:22,053 | INFO | [EXECUTE TOOL] -> exit node - discovery done

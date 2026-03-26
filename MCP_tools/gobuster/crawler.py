@@ -59,42 +59,6 @@ async def serverHealth():
     return await mcp.call_tool(name="server_health", arguments={})
 
 
-# filter out directories and endpoints with certain http status codes
-def filterEndpoints(goBusterData: dict):
-    endpointsData = goBusterData["endpoints"]
-    endpointTarget = goBusterData["target"]
-
-    endpointsDir = []
-    endpointsFile = []
-
-    for endpoint in endpointsData:
-        # status = endpoint["status"]
-
-        status = endpoint.get("status") or 0
-
-        endType = endpoint["type"]
-
-        if status >= 400 and status != 403:
-            continue
-
-        if endType == "directory" and status in [200, 201, 301, 302]:
-            if endpoint["redirect"]:
-                address = endpoint["redirect_address"]
-            else:
-                address = "".join((endpointTarget, endpoint["path"]))
-            endpointsDir.append(address)
-
-        if endType == "file" and status in [200, 302]:
-            address = "".join((endpointTarget, endpoint["path"]))
-            endpointsFile.append(address)
-
-    return {
-        "target": endpointTarget,
-        "directories": endpointsDir,
-        "files": endpointsFile,
-    }
-
-
 async def runKatana(url):
     realCommand = (
         f"/home/kali/go/bin/katana "
@@ -334,32 +298,36 @@ def deduplicateOutput(katanaVectorList) -> List[AttackVector]:
     return list(merged.values())
 
 
-async def main(payload):
+async def main(payload: Dict[str, Any]):
+    endpoints_input = payload.get("endpoints", [])
 
-    filteredEndOutput = filterEndpoints(goBusterData=payload)
-    endpoints = filteredEndOutput["directories"] + filteredEndOutput["files"]
-
-    print(f"\n\nEndpoint files:\n\n{endpoints}")
+    endpoints = []
+    for ep in endpoints_input:
+        base = ep.get("base_url", "").rstrip("/")
+        path = ep.get("path", "")
+        if not path.startswith("/"):
+            path = "/" + path
+        endpoints.append(f"{base}{path}")
+    for e in endpoints:
+        print(f"  - {e}")
 
     allVectors: List[AttackVector] = []
-
-    fixedVectors: List[AttackVector] = []
-
     for endpoint in endpoints:
-        print(f"\n\nEndpoint:{endpoint}")
+        print(f"\n\n[CRAWLER] current endpoint: {endpoint}")
 
-        katanaResult = await runKatana(url=endpoint)
-        vectors = parseKatana(katanaResult)
-
-        allVectors.extend(vectors)
+        try:
+            katanaResult = await runKatana(url=endpoint)
+            vectors = parseKatana(katanaResult)
+            allVectors.extend(vectors)
+        except Exception as e:
+            print(f"[CRAWLER ERROR] for endpoint {endpoint}: {e}")
 
     fixedVectors = deduplicateOutput(allVectors)
-
     finalVectors = finalVectorFilter(vectors=fixedVectors)
 
-    print(f"\n\nFINAL RESULT:\n\n{json.dumps(finalVectors, indent=4)}")
-
-    print(f"\n\nRAW FINAL RESULT:\n\n{finalVectors}")
+    print(
+        f"\n\n[CRAWLER] final result ({len(finalVectors)} vectors):\n{json.dumps(finalVectors, indent=4)}"
+    )
 
     return finalVectors
 

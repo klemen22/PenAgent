@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Literal
 import asyncio
 import os
 from dotenv import load_dotenv
@@ -8,6 +8,7 @@ from langchain_ollama import ChatOllama
 import logging
 from pathlib import Path
 import re
+import ipaddress
 
 load_dotenv()
 
@@ -30,7 +31,7 @@ llm = ChatOllama(
     name=AGENT_NAME,
     model=LLM_MODEL,
     base_url=LM_API,
-    temperature=0.2,
+    temperature=0.1,
     num_ctx=TOKEN_WINDOW_SIZE,
     format=None,
 )
@@ -44,8 +45,11 @@ for log in os.listdir(logDir):
     if os.path.isfile(os.path.join(logDir, log)):
         logCount += 1
 
+import json
+
 with open("MCP_tools/nmap/nmap_allowed_arguments.json") as f:
-    ALLOWED_ARGS = f.read()
+    ALLOWED_ARGS = json.load(f)
+
 
 setupMetadataLogger(AGENT_NAME)
 
@@ -57,7 +61,7 @@ setupMetadataLogger(AGENT_NAME)
 class nmapPlanStep(BaseModel):
     description: str = Field(default="")
     target: str = Field(default="")
-    scan_type: str = Field(default="")
+    # scan_type: str = Field(default="")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -70,17 +74,21 @@ class nmapOutputPlan(BaseModel):
 
 
 class agentFeedback(BaseModel):
+    reasoning: str = Field(
+        ..., description="Agent's analysis of the results and current state."
+    )
+    decision: Optional[Literal["continue", "replan", "finish_host"]] = Field(
+        default=None
+    )
     confidence: float = Field(default=0.0)
-    reasoning: str = Field(default="")
 
 
 class nmapToolCall(BaseModel):
+    reasoning: str
     target: str
     scan_type: str
-    ports: Optional[str] = Field(default="")
-    additional_args: Optional[str] = Field(default="")
-
-    reasoning: str = Field(..., description="Agent's reasoning for specific tool call.")
+    ports: Optional[List[int]] = Field(default_factory=list)
+    additional_args: Optional[List[str]] = Field(default_factory=list)
 
 
 """
@@ -134,6 +142,7 @@ class nmapAgentState(BaseModel):
     objective: str = Field(
         default="", description="Main objective given by the orchestartor."
     )
+    target: List[str] = Field(default_factory=list)
 
     host_discovery: hostDiscovery = Field(default_factory=hostDiscovery)
 
@@ -167,24 +176,37 @@ class nmapAgentState(BaseModel):
 async def initNode(state: nmapAgentState):
     logData(message="[INIT NODE] -> enter node")
 
-    targets = extractTargets(state.objective)
+    if state.target:
+        targets = list(set(state.target))
+        logData(f"[INIT NODE] -> targets provided by orchestrator: {targets}")
+    else:
+        targets = list(set(extractTargets(state.objective)))
+        logData(f"[INIT NODE] -> targets extracted from objective: {targets}")
 
     if not targets:
-        logData(message="[INIT NODE] -> no targets detected -> host discovery required")
+        logData("[INIT NODE] -> no targets detected -> host discovery required")
         return {
             "decision": "plan",
         }
 
-    cidrTargets = [target for target in targets if "/" in target]
-    ipTargets = [target for target in targets if "/" not in target]
+    networkTargets = [t for t in targets if isNetworkTarget(t)]
+    ipTargets = [t for t in targets if not isNetworkTarget(t)]
 
-    if cidrTargets:
-        logData("[INIT NODE] -> CIDR detected -> discovery still required")
+    if networkTargets:
+        logData(
+            f"[INIT NODE] -> network detected {networkTargets} -> discovery required"
+        )
+
         return {
+            "host_discovery": hostDiscovery(
+                done=False,
+                currentToolCall=None,
+            ),
             "decision": "plan",
         }
 
     for ip in ipTargets:
+
         if ip not in state.host_memory:
 
             state.host_memory[ip] = hostMemory(
@@ -196,9 +218,7 @@ async def initNode(state: nmapAgentState):
 
     state.host_discovery.done = True
 
-    logData(
-        f"[INIT NODE] -> skipping host discovery, found following hosts: {ipTargets}"
-    )
+    logData(f"[INIT NODE] -> skipping host discovery, using direct hosts: {ipTargets}")
 
     return {
         "host_memory": state.host_memory,
@@ -247,19 +267,24 @@ async def planningNode(state: nmapAgentState):
     Objective:
     {state.objective}
     
+    Initial proposed target/s from orchestrator:
+    {state.target}
+    
     Target host - known facts:
     IP: {currentMemory.ip}
     Status: {currentMemory.status}
+    Open ports: {currentMemory.open_ports if currentMemory.open_ports else ""}
+    Services: {currentMemory.services_found if currentMemory.services_found else ""}
+    
+    SCANS ALREADY PERFORMED:
+    {currentMemory.scans_performed if currentMemory.scans_performed else "None"}
     
     Create a scan plan.
 
-    Steps must include:
-    1. port scan
-    2. service detection
-    
     IMPORTANT:
     You are working on ONLY this IP address.
     Do NOT consider any other addresses.
+    DO NOT perform any vulnerability scans
     
     Return a valid JSON:
     - reasoning
@@ -268,10 +293,9 @@ async def planningNode(state: nmapAgentState):
     Inside setps list for each step return:
     - description
     - target
-    - scan_type
     """
 
-    retries = 2
+    retries = 3
 
     finalPrompt = additionalPrompt + prompt if currentMemory.replan_flag else prompt
 
@@ -331,7 +355,6 @@ async def planningNode(state: nmapAgentState):
 
 async def selectToolCall(state: nmapAgentState):
     logData(message="[TOOL CALL NODE] -> enter node")
-
     # check host discovery
     hostDiscovery = state.host_discovery
     if not hostDiscovery.done:
@@ -341,8 +364,8 @@ async def selectToolCall(state: nmapAgentState):
         
         Your current objective:
         {state.objective}
-        
-        If no hosts are known yet you must perform host discovery.
+            
+        It was decided that host discovery is needed.
         
         Available nmap options for host discovery:
         {ALLOWED_ARGS}
@@ -351,23 +374,44 @@ async def selectToolCall(state: nmapAgentState):
             - which options are appropriate
             - explain reasoning
             
+        You MUST follow these rules EXACTLY.
+
+        IMPORTANT RULE:
+        If performing host discovery:
+        - You MUST only use scan_type
+        - You MUST NOT include ports
+        - You MUST NOT include service detection or OS detection
+        
+        IMPORTANT RULES FOR NMAP ARGUMENTS:
+        1. 'additional_args' must be a STRING, not a list.
+        2. Syntax for top ports: Use '--top-ports 100', NEVER just '100' or '--top-ports' alone.
+        3. Order matters: Flags that require a value MUST be followed immediately by that value.
+        4. Do not repeat the target IP in additional_args.
+
+        BAD EXAMPLE: "additional_args": ["100", "--open", "--top-ports"]
+        GOOD EXAMPLE: "additional_args": ["--top-ports", "100", "--open"]
+        
         Return ONLY JSON in the following format:
         {{
-            "target": "<IP address, hostname or CIDR>",
-            "scan_type": "<List of nmap scan arguments (ex. -sS -sV)>",
-            "ports": "<Comma-separated ports or ranges, empty if host discovery>",
-            "additional_args": "<Any additional nmap arguments if needed>",
-            "reasoning": "<Your reasoning for this tool call>"
+            "reasoning": <Your reasoning for this tool call>,
+            "target": <IP address, hostname or CIDR>,
+            "scan_type": <List of nmap scan arguments (ex. -sS -sV)>,
+            "ports": <A JSON list of integers (e.g., [80, 443]), or an empty list [] if no specific ports are targeted>,
+            "additional_args": <A JSON list of an additional nmap arguments (e.g., ["-T4", "--open"]), or empty list [] if non are needed>,
         }}
+            
+        CORRECT EXAMPLES:
+        (DO NOT take target address from examples! Use given addresses.)
         
-        Example output:
         {{
-            "target": "192.168.157.0/24",
+            "reasoning": "Performing host discovery to find live hosts in the subnet.",
+            "target": "10.10.10.0/24",
             "scan_type": "-sn",
-            "ports": "",
-            "additional_args": "",
-            "reasoning": "Performing host discovery to find live hosts in the subnet."
+            "ports": [],
+            "additional_args": [], 
         }}
+
+        You MUST return valid JSON only.
         """
 
         # Return valid json in the following form:
@@ -401,6 +445,9 @@ async def selectToolCall(state: nmapAgentState):
         toolCall = toolCallFull["parsed"]
         toolCallRaw = toolCallFull["raw"]
 
+        toolCall = normalizeToolCall(toolCall=toolCall)
+        toolCall = normalizeAdditionalArgs(toolCall=toolCall)
+
         logMetadata(agent_name=AGENT_NAME, metadata=toolCallRaw.response_metadata)
         logData(f"[SELECT TOOL CALL] -> raw produced tool call: {toolCall}")
         logData(
@@ -417,6 +464,9 @@ async def selectToolCall(state: nmapAgentState):
 
     # create tool call for current host
     currentHostMemory = getCurrentHost(state=state)
+    performed_summary = ""
+    for scan in currentHostMemory.scans_performed:
+        performed_summary += f"- Command: {scan} (COMPLETED)\n"
 
     if currentHostMemory.step_index >= len(currentHostMemory.plan):
         logData(message=f"[SELECT TOOL CALL] -> exit node: replan needed!")
@@ -439,16 +489,19 @@ async def selectToolCall(state: nmapAgentState):
     OS guess: {currentHostMemory.os_guess if currentHostMemory.os_guess else "None."}
     
     Current plan step:
-    Description: {planStep.description}
-    Proposed scan type: {planStep.scan_type}
-    
-    Already performed tool calls:
-    {currentHostMemory.scans_performed}
+    {planStep}
+
+    [PROGRESS TRACKER]
+    You have already attempted these specific actions:
+    {performed_summary}
+
+    CRITICAL: Do NOT repeat any command that is already marked as COMPLETED. 
+    If a scan returned no ports, do NOT scan the same ports again with the same arguments.
     
     Last tool output:
     {currentHostMemory.last_tool_output}
     
-    Available nmap options:
+    [AVAILABLE NMAP ARGUMENTS]
     {ALLOWED_ARGS}
     
     Last feedback:
@@ -456,29 +509,61 @@ async def selectToolCall(state: nmapAgentState):
     
     Decide:
     - which tool call and options are appropriate
+    - prefer using DIFFERENT TOOL CALLS each iteration
+    - try NOT to perform the same tool call as listed in "Already performed tool calls" section
     - explain with reasoning
     
 
+    You MUST follow these rules EXACTLY.
+
+    [COMMAND CONSTRUCTION RULES]
+    1. SCAN_TYPE: Use ONLY flags like -sS, -sV, -sU, -sC, -sn. (NEVER put -p here!)
+    2. PORTS: This MUST be a JSON list of integers. Example: [80, 443].
+    3. ADDITIONAL_ARGS: Use ONLY flags from the [AVAILABLE NMAP ARGUMENTS] list.
+    
+    CRITICAL RULES:
+    - NEVER use '-p-' unless specifically requested in the objective. 
+    - Always prefer scanning top ports (e.g., using '--top-ports 100') or specific common ports first.
+    - If you suspect a host is up but 'standard' ports are closed, use '--top-ports 1000' instead of '-p-'.
+    
+    BAD EXAMPLE: "additional_args": ["100", "--open", "--top-ports"]
+    GOOD EXAMPLE: "additional_args": ["--top-ports", "100", "--open"]
+
     Return ONLY JSON in the following format:
     {{
-        "target": "<IP address, hostname or CIDR>",
-        "scan_type": "<List of nmap scan arguments (ex. -sS -sV)>",
-        "ports": "<Comma-separated ports or ranges, empty if host discovery>",
-        "additional_args": "<Any additional nmap arguments if needed>",
-        "reasoning": "<Your reasoning for this tool call>"
+        "reasoning": <Your reasoning for this tool call>,
+        "target": <IP address, hostname or CIDR>,
+        "scan_type": <List of nmap scan arguments (ex. -sS -sV)>,
+        "ports": <A JSON list of integers (e.g., [80, 443]), or an empty list [] if no specific ports are targeted>,
+        "additional_args": <A JSON list of an additional nmap arguments (e.g., ["-T4", "--open"]), or empty list [] if non are needed>,
     }}
         
-    Example output:
+    CORRECT EXAMPLES:
+    (DO NOT take target address from examples! Use given addresses.)
+    
     {{
-        "target": "192.168.157.0/24",
+        "reasoning": "Performing host discovery to find live hosts in the subnet.",
+        "target": "10.10.10.0/24",
         "scan_type": "-sn",
-        "ports": "",
-        "additional_args": "",
-        "reasoning": "Performing host discovery to find live hosts in the subnet."
+        "ports": [],
+        "additional_args": [],
+        
     }}
+    
+    Example of a correct service scan:
+    {{
+        "reasoning": "Scanning common services",
+        "target": "10.10.10.2",
+        "scan_type": "-sV",
+        "ports": [80, 443, 8080],
+        "additional_args": ["-T4", "--open"],
+        
+    }}
+
+    You MUST return valid JSON only.
     """
 
-    retries = 2
+    retries = 3
 
     for retry in range(retries):
 
@@ -488,6 +573,9 @@ async def selectToolCall(state: nmapAgentState):
 
         toolCall = toolCallFull["parsed"]
         toolCallRaw = toolCallFull["raw"]
+
+        toolCall = normalizeToolCall(toolCall=toolCall)
+        toolCall = normalizeAdditionalArgs(toolCall=toolCall)
 
         # currentHostMemory.currentToolCall = toolCall
 
@@ -531,15 +619,39 @@ async def toolExecuteNode(state: nmapAgentState):
 
     hostDiscovery = state.host_discovery
 
-    if not hostDiscovery.done:
+    if not hostDiscovery.done and hostDiscovery:
         hostDiscoveryToolCall = hostDiscovery.currentToolCall
+
+        if not hostDiscovery.currentToolCall:
+            logData(
+                message="[EXECUTE TOOL] -> error: hostDiscovery.currentToolCall is None!"
+            )
+            return {
+                "decision": "plan",
+            }
+
+        tool = hostDiscovery.currentToolCall
+
         try:
+
+            ports = (
+                ",".join(map(str, tool.ports))
+                if isinstance(tool.ports, list)
+                else (tool.ports or "")
+            )
+
+            args = (
+                " ".join(map(str, tool.additional_args))
+                if isinstance(tool.additional_args, list)
+                else (tool.additional_args or "")
+            )
+
             rawOutput = await nmap_scan(
                 nmapInput(
-                    target=hostDiscoveryToolCall.target,
-                    scan_type=hostDiscoveryToolCall.scan_type,
-                    ports=hostDiscoveryToolCall.ports,
-                    additional_args=hostDiscoveryToolCall.additional_args,
+                    target=tool.target,
+                    scan_type=tool.scan_type,
+                    ports=ports,
+                    additional_args=args,
                 )
             )
         except Exception as e:
@@ -556,15 +668,35 @@ async def toolExecuteNode(state: nmapAgentState):
         }
 
     currentMemory = getCurrentHost(state=state)
+
+    if not currentMemory or not currentMemory.currentToolCall:
+        logData("[EXECUTE TOOL] -> error currentToolCall is None for current host!")
+        return {
+            "decision": "plan",
+        }
+
     currentToolCall = currentMemory.currentToolCall
 
     try:
+
+        ports = (
+            ",".join(map(str, currentToolCall.ports))
+            if isinstance(currentToolCall.ports, list)
+            else (currentToolCall.ports or "")
+        )
+
+        args = (
+            " ".join(map(str, currentToolCall.additional_args))
+            if isinstance(currentToolCall.additional_args, list)
+            else (currentToolCall.additional_args or "")
+        )
+
         rawOutput = await nmap_scan(
             nmapInput(
                 target=currentToolCall.target,
                 scan_type=currentToolCall.scan_type,
-                ports=currentToolCall.ports,
-                additional_args=currentToolCall.additional_args,
+                ports=ports,
+                additional_args=args,
             )
         )
     except Exception as e:
@@ -574,7 +706,7 @@ async def toolExecuteNode(state: nmapAgentState):
             "success": False,
         }
 
-        logData(message=f"[TOOL EXECUTE] -> exit node - exception occured!")
+        logData(message=f"[TOOL EXECUTE] -> exit node - exception occured: {str(e)}")
         return {
             "decision": "evaluate",
             "host_memory": state.host_memory,
@@ -685,6 +817,7 @@ async def parseOutputNode(state: nmapAgentState):
         currentHost.replan_flag = True
         currentHost.replan_reason = "Empty tool output!"
         return {
+            "host_discovery": state.host_discovery,
             "decision": "replan",
             "host_memory": state.host_memory,
         }
@@ -712,6 +845,7 @@ async def parseOutputNode(state: nmapAgentState):
     logData(f"[PARSE OUTPUT] -> exit node")
 
     return {
+        "host_discovery": state.host_discovery,
         "host_memory": state.host_memory,
         "decision": "continue",
     }
@@ -726,25 +860,27 @@ async def evaluateNode(state: nmapAgentState):
         return {"decision": "plan"}
 
     planStep = currentMemory.plan[currentMemory.step_index]
+    lastScan = (
+        currentMemory.scans_performed[-1] if currentMemory.scans_performed else None
+    )
 
     prompt = f"""
-    You are a professional evaluater agent.
-    Your task is to analyze bellow listed results and give feedback.
+    You are a professional security analyst evaluating nmap results.
     
-    Current plan:
-    {planStep}
+    Current plan step: {planStep.description}
+    Last command: {lastScan}
+    Output: {currentMemory.last_tool_output}
     
-    Last tool call:
-    {currentMemory.scans_performed[-1]}
-    
-    Las tool output:
-    {currentMemory.last_tool_output}
-    
-    Decide confidence value based on a tool call performed and coresponding result.
+    Decide:
+        1. 'continue': If the scan was successful and you want to move to the NEXT step in the plan.
+        2. 'replan': If the scan failed or returned unexpected results and you need a NEW approach for THIS host.
+        3. 'finish_host': If you have gathered enough information or the host is unresponsive/empty.
       
     Return valid json in the following form:
-    - confidence <a number between 0.0 and 1.0>
     - reasoning
+    - decision <one of [continue, replan, finish_host]>
+    - confidence <a number between 0.0 and 1.0>
+
     """
 
     feedbackFull = await llm.with_structured_output(
@@ -769,40 +905,10 @@ async def evaluateNode(state: nmapAgentState):
             "fail_reason": state.fail_reason,
         }
 
-    # too low confidence
-    if currentMemory.feedback.confidence < 0.3:
-        currentMemory.replan_count += 1
+    decision = feedback.decision.lower()
 
-        # max number of replans reached -> moving to next host
-        if currentMemory.replan_count >= currentMemory.max_replans:
-            state.host_index += 1
-            logData(
-                message="[EVALUATE NODE] -> exit node (replan cap reached) -> continue with next node"
-            )
-            return {
-                "decision": "plan",
-                "host_memory": state.host_memory,
-                "host_index": state.host_index,
-            }
-        else:
-            # replan
-            currentMemory.replan_reason = "Confidence too low."
-            logData(
-                message="[EVALUATE NODE] -> exit node (too low confidence, replan is needed)"
-            )
-
-            currentMemory.replan_flag = True
-            currentMemory.replan_reason = "Confidence is too low!"
-            return {
-                "decision": "replan",
-                "host_memory": state.host_memory,
-            }
-
-    currentMemory.step_index += 1
-
-    # all planned steps executed
-    if currentMemory.step_index >= len(currentMemory.plan):
-        logData(message="[EVALUATE NODE] -> exit node - moving to next host")
+    if decision == "finish_host":
+        logData(f"[EVALUATE] -> agent decided to finish host {currentMemory.ip}")
         state.host_index += 1
         return {
             "decision": "plan",
@@ -810,11 +916,31 @@ async def evaluateNode(state: nmapAgentState):
             "host_index": state.host_index,
         }
 
-    logData(message="[EVALUATE NODE] -> exit node - moving to next step")
-    return {
-        "host_memory": state.host_memory,
-        "decision": "continue",
-    }
+    if decision == "replan":
+        currentMemory.replan_count += 1
+        if currentMemory.replan_count >= currentMemory.max_replans:
+            logData("[EVALUATE] -> max replans reached, moving to next host.")
+            state.host_index += 1
+            return {
+                "decision": "plan",
+                "host_memory": state.host_memory,
+                "host_index": state.host_index,
+            }
+
+        currentMemory.replan_flag = True
+        currentMemory.replan_reason = feedback.reasoning
+        return {"decision": "replan", "host_memory": state.host_memory}
+
+    currentMemory.step_index += 1
+    if currentMemory.step_index >= len(currentMemory.plan):
+        state.host_index += 1
+        return {
+            "decision": "plan",
+            "host_memory": state.host_memory,
+            "host_index": state.host_index,
+        }
+
+    return {"decision": "continue", "host_memory": state.host_memory}
 
 
 async def outputNode(state: nmapAgentState):
@@ -840,6 +966,9 @@ async def outputNode(state: nmapAgentState):
         
         Objective:
         {state.objective}
+        
+        Initial proposed target/s from orchestrator:
+        {state.target}
         
         Host infromation:
         {state.host_memory}
@@ -892,6 +1021,21 @@ async def outputNode(state: nmapAgentState):
 # ------------------------------------------------------------------------------- #
 
 
+def isNetworkTarget(target: str) -> bool:
+    try:
+        if "/" in target:
+            return True
+
+        ip = ipaddress.ip_address(target)
+
+        if target.endswith(".0") or target.endswith(".255"):
+            return True
+
+        return False
+    except:
+        return False
+
+
 def extractTargets(prompt: str):
 
     cidr = re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}\b", prompt)
@@ -900,12 +1044,85 @@ def extractTargets(prompt: str):
     return cidr + ips
 
 
+def normalizeToolCall(toolCall: nmapToolCall):
+
+    if "-p" in toolCall.scan_type:
+
+        extracted_ports = re.findall(r"-p\s*([\d,]+)", toolCall.scan_type)
+        if extracted_ports:
+            new_ports = [int(p) for p in extracted_ports[0].split(",") if p.isdigit()]
+            toolCall.ports = list(set(toolCall.ports + new_ports))
+
+        toolCall.scan_type = re.sub(r"-p\s*[\d,]+", "", toolCall.scan_type).strip()
+        toolCall.scan_type = toolCall.scan_type.replace("-p-", "").strip()
+
+    toolCall.additional_args = list(set(toolCall.additional_args))
+
+    return toolCall
+
+
+def normalizeAdditionalArgs(toolCall: nmapToolCall) -> nmapToolCall:
+    cleaned = []
+
+    for arg in toolCall.additional_args:
+        arg = arg.strip()
+
+        parts = arg.split()
+
+        for p in parts:
+            cleaned.append(p)
+
+    toolCall.additional_args = cleaned
+    return toolCall
+
+
 def validateToolCall(toolCall: nmapToolCall):
-    # TODO: expand this function later for more detailed check
-    if toolCall.target == "" or toolCall.scan_type == "":
+    if not toolCall.target or not toolCall.scan_type:
         return False
-    else:
-        return True
+
+    all_args_text = (
+        f"{toolCall.scan_type} {' '.join(map(str, toolCall.additional_args))}"
+    )
+    forbidden_chars = {";", "&&", "|", "`", "$", "(", ")"}
+    if any(char in all_args_text for char in forbidden_chars):
+        return False
+
+    if "-p" in toolCall.scan_type.lower():
+        return False
+
+    is_discovery = "-sn" in toolCall.scan_type
+    has_ports = len(toolCall.ports) > 0 if toolCall.ports else False
+    if is_discovery:
+        forbidden_discovery = ["-sS", "-sT", "-sV", "-O", "-sC"]
+        if has_ports or any(flag in toolCall.scan_type for flag in forbidden_discovery):
+            return False
+
+    allowed_flags = set()
+    for cat in ALLOWED_ARGS.values():
+        items = (
+            cat
+            if isinstance(cat, list)
+            else cat.get("safe", []) + cat.get("aggressive", [])
+        )
+        for item in items:
+            allowed_flags.add(item["name"].split()[0])
+
+    current_flags = toolCall.scan_type.split() + toolCall.additional_args
+    for flag in current_flags:
+        flag_str = str(flag)
+
+        if not flag_str.startswith("-"):
+            continue
+
+        base_flag = flag_str.split("=")[0]
+        if base_flag not in allowed_flags:
+            logData(f"[VALIDATION] -> Rejected unknown flag: {base_flag}")
+            return False
+
+    if toolCall.ports and not all(isinstance(p, int) for p in toolCall.ports):
+        return False
+
+    return True
 
 
 def setupLogger():
@@ -1067,5 +1284,5 @@ if __name__ == "__main__":
     print("#" + "-" * 10 + "Nmap_agent_test" + 10 * "-" + "#\n")
     print("type 'exit' to close the conversation\n")
 
-    testPrompt = "Position yourself in the network 192.168.157.0 and discover all relevant hosts."
+    testPrompt = "Position yourself in the network 192.168.157.0/24 and discover all relevant hosts."
     result = asyncio.run(agentRunner(prompt=testPrompt))

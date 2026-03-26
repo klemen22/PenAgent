@@ -20,16 +20,63 @@
 
   "port_scanning": {
     "safe": [
-      { "name": "-sS", "description": "TCP SYN scan" },
-      { "name": "-sT", "description": "TCP connect scan" },
+      {
+        "name": "-sS",
+        "description": "TCP SYN (Stealth) scan - fastest and most popular"
+      },
+      {
+        "name": "-sT",
+        "description": "TCP connect scan - used for unprivileged users or IPv6"
+      },
       { "name": "-F", "description": "Fast scan" },
       { "name": "--top-ports", "type": "int", "example": "--top-ports 100" },
       { "name": "-p", "type": "ports", "example": "-p 22,80,443" }
     ],
     "aggressive": [
-      { "name": "-p-", "description": "Scan all ports" },
-      { "name": "-sU", "description": "UDP scan" },
+      {
+        "name": "-sU",
+        "description": "UDP scan - for discovering UDP services"
+      },
+      {
+        "name": "-sA",
+        "description": "TCP ACK scan - used to map out firewall rulesets"
+      },
+      {
+        "name": "-sW",
+        "description": "TCP Window scan - detects open/closed ports via window field"
+      },
+      {
+        "name": "-sM",
+        "description": "TCP Maimon scan - obscure firewall-evading scan (FIN/ACK)"
+      },
+      {
+        "name": "-sO",
+        "description": "IP Protocol scan - determines supported protocols (TCP, ICMP, etc.)"
+      },
       { "name": "--port-ratio", "type": "float" }
+    ],
+    "stealth_evasion": [
+      {
+        "name": "-sN",
+        "description": "TCP NULL scan - no bits set, sneaks past firewalls"
+      },
+      { "name": "-sF", "description": "TCP FIN scan - sets only the FIN bit" },
+      {
+        "name": "-sX",
+        "description": "TCP Xmas scan - sets FIN, PSH, and URG flags (lights up like a tree)"
+      },
+      {
+        "name": "-sI",
+        "type": "string",
+        "example": "-sI <zombie_host>",
+        "description": "Idle scan - extremely stealthy, uses a zombie host"
+      },
+      {
+        "name": "-b",
+        "type": "string",
+        "example": "-b <ftp_proxy>",
+        "description": "FTP Bounce scan - uses FTP proxy to scan (deprecated but useful)"
+      }
     ]
   },
 

@@ -45,6 +45,38 @@
     }
   },
 
+  "dir_options": {
+    "safe": [
+      {
+        "name": "-x",
+        "type": "string",
+        "description": "File extensions to search (e.g., -x php,txt,html)"
+      },
+      { "name": "-k", "description": "Skip SSL certificate verification" },
+      {
+        "name": "-a",
+        "type": "string",
+        "description": "Set User-Agent string"
+      },
+      {
+        "name": "--random-agent",
+        "description": "Use a random User-Agent string"
+      }
+    ],
+    "aggressive": [
+      {
+        "name": "-c",
+        "type": "string",
+        "description": "Cookies to use (e.g., -c 'session=1234')"
+      },
+      {
+        "name": "-b",
+        "type": "string",
+        "description": "Status codes to ignore (e.g., -b 403,404)"
+      }
+    ]
+  },
+
   "global_options": {
     "information": [
       {

@@ -32,7 +32,7 @@ llm = ChatOllama(
     model=LLM_MODEL,
     num_ctx=TOKEN_WINDOW_SIZE,
     base_url=LM_API,
-    temperature=0.2,
+    temperature=0.1,
     format=None,
 )
 
@@ -49,6 +49,7 @@ for log in os.listdir(logDir):
 with open("MCP_tools/gobuster/gobuster_allowed_arguments.json") as f:
     ALLOWED_ARGS = json.load(f)
 
+print(json.dumps(ALLOWED_ARGS, indent=2))
 setupMetadataLogger(AGENT_NAME)
 
 # ------------------------------------------------------------------------------- #
@@ -57,6 +58,7 @@ setupMetadataLogger(AGENT_NAME)
 
 
 class gobusterEndpoint(BaseModel):
+    base_url: str = Field(default="")
     path: str = Field(default="")
     status: Optional[int] = Field(default=None)
     size: Optional[int] = Field(default=None)
@@ -73,16 +75,16 @@ class gobusterMemory(BaseModel):
 
 
 class gobusterToolCall(BaseModel):
+    reasoning: Optional[str] = Field(default="")
     url: str = Field(default="")
     mode: str = Field(default="dir")
     additional_args: str = Field(default="")
-    reasoning: Optional[str] = Field(default=None)
 
 
 class toolFeedback(BaseModel):
+    reasoning: Optional[str] = Field(default=None)
     confidence: float = Field(default=0.0, description="Number between 0.0 - 1.0")
     feedback: Optional[Literal["continue", "done", "error"]] = Field(default=None)
-    reasoning: Optional[str] = Field(default=None)
 
 
 class gobusterOutput(BaseModel):
@@ -94,8 +96,8 @@ class gobusterAgentState(BaseModel):
     objective: str = Field(
         default="", description="Objective given by the orchestartor"
     )
-    target: Optional[str] = Field(default=None)
-
+    target: List[str] = Field(default_factory=list)
+    target_index: int = Field(default=0)
     tool_call: gobusterToolCall = Field(default_factory=gobusterToolCall)
 
     memory: gobusterMemory = Field(default_factory=gobusterMemory)
@@ -104,7 +106,7 @@ class gobusterAgentState(BaseModel):
     max_iterations: int = Field(default=10)
 
     decision: Optional[
-        Literal["continue", "stop", "crawler", "done", "evaluate", "parse"]
+        Literal["continue", "stop", "crawler", "done", "evaluate", "parse", "plan"]
     ] = Field(default=None)
     feedback: toolFeedback = Field(default_factory=toolFeedback)
     error_detected: bool = Field(
@@ -132,46 +134,19 @@ async def planningNode(state: gobusterAgentState):
     feedback = state.feedback
     memory = state.memory
 
-    # save target
     if not state.target:
+        urls = re.findall(r"https?://[^\s]+", state.objective)
+        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b", state.objective)
 
-        url_match = re.search(r"https?://[^\s]+", state.objective)
+        all_targets = set(urls)
+        for ip in ips:
+            if not any(ip in u for u in urls):
+                all_targets.add(f"http://{ip}")
 
-        if url_match:
-            target = url_match.group(0)
+        state.target = list(all_targets)
+        logData(f"[PLANNING NODE] -> Initial targets found: {state.target}")
 
-        else:
-            ip_match = re.search(
-                r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b", state.objective
-            )
-
-            if ip_match:
-                target = ip_match.group(0)
-
-                # auto-add http if missing
-                if not target.startswith("http"):
-                    target = f"http://{target}"
-
-            else:
-                domain_match = re.search(
-                    r"\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?::\d{1,5})?\b", state.objective
-                )
-
-                if domain_match:
-                    target = domain_match.group(0)
-
-                    if not target.startswith("http"):
-                        target = f"http://{target}"
-
-                else:
-                    target = None
-
-        if target:
-            state.target = target
-
-        # print(f"FOUND TARGET: {target}")
-        state.iteration += 1
-
+    state.iteration += 1
     # check itterations
     if state.iteration >= state.max_iterations:
         state.fail_reason = f"Max number of iterations reached (number of iterations: {state.iteration})"
@@ -187,17 +162,50 @@ async def planningNode(state: gobusterAgentState):
             "decision": "stop",
         }
 
+    if state.target_index >= len(state.target):
+        logData("[PLANNING NODE] -> all targets done, moving to crawler...")
+        return {
+            "decision": "crawler",
+            "target_index": state.target_index,
+            "iteration": state.iteration,
+        }
+
+    current_target = state.target[state.target_index]
+    if not state.memory.scans_performed:
+        logData(
+            f"[PLANNING NODE] -> first agent run, initializing target: {current_target}"
+        )
+        state.feedback.feedback = None
+        state.error_detected = False
+    elif state.memory.scans_performed[-1]["url"] != current_target:
+        logData(
+            f"[PLANNING NODE] -> new target detected: {current_target}, resetting feedback for fresh start."
+        )
+        state.feedback.feedback = None
+        state.error_detected = False
+
+    try:
+        recent_endpoints = [
+            e.path for e in memory.endpoints if e.base_url == current_target
+        ][-15:]
+        memory_summary = f"""
+            - Current Target: {current_target}
+            - Scans performed on this target: {len([s for s in memory.scans_performed if s['url'] == current_target])}
+            - Endpoints found for this target: {len([e for e in memory.endpoints if e.base_url == current_target])}
+            - Recent paths: {recent_endpoints}
+            - Key signals: {memory.signals}
+            """
+    except:
+        memory_summary = "None."
+
+    logData(f"[PLANNING NODE] -> memory summary retrieved: {memory_summary}")
+    logData("[PLANNING NODE] -> start planning...")
+
     if state.feedback.feedback is not None:
-        if feedback.feedback == "done":
-            return {
-                "target": state.target,
-                "decision": "crawler",
-                "iteration": state.iteration,
-            }
 
         if feedback.feedback == "continue":
-
             if state.error_detected:
+                logData("[PLANNING NODE] -> tool encountered error, replanning...")
                 prompt = f"""
                 You are a Gobuster enumeration agent.
                 
@@ -205,7 +213,7 @@ async def planningNode(state: gobusterAgentState):
                 {state.objective}
                 
                 Target:
-                {state.target}
+                {current_target}
                 
                 [WARNING]
                 
@@ -214,10 +222,9 @@ async def planningNode(state: gobusterAgentState):
                 Feedback:
                 {feedback.reasoning}
                 
-                [MEMORY]
+                [MEMORY SUMMARY]
 
-                Already known facts stored in memory:
-                {memory if memory else "None"}
+                {memory_summary}
                 
                 [TASK]
                 
@@ -233,11 +240,19 @@ async def planningNode(state: gobusterAgentState):
                 Do NOT use --recursion.
                 
                 Return JSON:
-                {{
+                {{  
+                    "reasoning": <Your reasoning for this tool call and arguments combination>
                     "url": <a valid target URL>
                     "mode": <gobuster mode -> default value is set to "dir">
                     "additional_args": <A combination of additional gobuster arguments - USE ONLY ARGUMENTS PROVIDED ABOVE>
-                    "reasoning": <Your reasoning for this tool call and arguments combination>
+                }}
+                
+                CORRECT EXAMPLE:
+                {{
+                    "reasoning": "Standard dir mode found nothing. I will now search for common web files by adding the -x flag.",
+                    "url": "http://192.168.1.10",
+                    "mode": "dir",
+                    "additional_args": "-x php,txt,zip"
                 }}
                 
                 """
@@ -245,6 +260,7 @@ async def planningNode(state: gobusterAgentState):
                 # reset error flag
                 state.error_detected = False
             else:
+                logData(f"[PLANNING NODE] -> creating new plan for {current_target}")
                 prompt = f"""
                 You are a Gobuster enumeration agent.
                 
@@ -252,7 +268,7 @@ async def planningNode(state: gobusterAgentState):
                 {state.objective}
                 
                 Target:
-                {state.target}
+                {current_target}
                 
                 [FEEDBACK]
                 
@@ -267,10 +283,9 @@ async def planningNode(state: gobusterAgentState):
                 Reasoning for confidence:
                 {feedback.reasoning}
                 
-                [MEMORY]
-                
-                Already known facts stored in memory:
-                {memory if memory else "None"}
+                [MEMORY SUMMARY]
+
+                {memory_summary}
                 
                 [TASK]
                 
@@ -286,24 +301,33 @@ async def planningNode(state: gobusterAgentState):
                 Do NOT use --recursion.
                 
                 Return JSON:
-                {{
+                {{  
+                    "reasoning": <Your reasoning for this tool call and arguments combination>
                     "url": <a valid target URL>
                     "mode": <gobuster mode -> default value is set to "dir">
                     "additional_args": <A combination of additional gobuster arguments - USE ONLY ARGUMENTS PROVIDED ABOVE>
-                    "reasoning": <Your reasoning for this tool call and arguments combination>
+                }}
+                
+                CORRECT EXAMPLE:
+                {{
+                    "reasoning": "Standard dir mode found nothing. I will now search for common web files by adding the -x flag.",
+                    "url": "http://192.168.1.10",
+                    "mode": "dir",
+                    "additional_args": "-x php,txt,zip"
                 }}
                 """
 
     else:
         # initial prompt
+        logData("[PLANNING NODE] -> creating initial plan...")
         prompt = f"""
         You are a Gobuster enumeration agent.
         
         Objective:
         {state.objective}
         
-        Target:
-        {state.target}
+        Targets:
+        {current_target}
         
         Decide on the initial gobuster scan to begin the enumeration process.
         
@@ -317,16 +341,23 @@ async def planningNode(state: gobusterAgentState):
         Do NOT use --recursion.
         
         Return JSON:
-        {{
+        {{  
+            "reasoning": <Your reasoning for this tool call and arguments combination>
             "url": <a valid target URL>
             "mode": <gobuster mode -> default value is set to "dir">
             "additional_args": <A combination of additional gobuster arguments - USE ONLY ARGUMENTS PROVIDED ABOVE>
-            "reasoning": <Your reasoning for this tool call and arguments combination>
         }}
-
+        
+        CORRECT EXAMPLE:
+        {{
+            "reasoning": "Standard dir mode found nothing. I will now search for common web files by adding the -x flag.",
+            "url": "http://192.168.1.10",
+            "mode": "dir",
+            "additional_args": "-x php,txt,zip"
+        }}
         """
 
-    retries = 2
+    retries = 3
     finalPrompt = prompt
 
     for attempt in range(retries):
@@ -375,7 +406,13 @@ async def toolNode(state: gobusterAgentState):
     toolCall = state.tool_call
     memory = state.memory
 
-    toolCall = validateToolCall(toolCall=toolCall, target=state.target)
+    try:
+        target = state.target[state.target_index]
+    except IndexError:
+        logData("[TOOL NODE] -> No more targets available.")
+        return {"decision": "output", "error_detected": True}
+
+    toolCall = validateToolCall(toolCall=toolCall, target=target)
 
     if state.tool_call != toolCall:
         logData(f"[TOOL NODE] -> initial tool call:\n {state.tool_call}")
@@ -389,7 +426,7 @@ async def toolNode(state: gobusterAgentState):
 
     memory.scans_performed.append(
         {
-            "url": state.target,
+            "url": target,
             "mode": toolCall.mode,
             "additional_args": toolCall.additional_args,
         }
@@ -409,23 +446,39 @@ async def toolNode(state: gobusterAgentState):
             "stderr": str(e),
             "success": False,
         }
-        logData(message="[TOOL NODE] -> Execption occured!")
-        memory.last_tool_output = rawOutput
-
-        return {
-            "memory": state.memory,
-            "decision": "evaluate",
-            "error_detected": True,
-        }
+        logData(message=f"[TOOL NODE] -> Exception occured: {str(e)}")
 
     if isinstance(rawOutput, tuple):
         rawOutput = rawOutput[1]["result"]
 
     memory.last_tool_output = rawOutput
+
+    stderr_content = str(rawOutput.get("stderr", "")).lower()
+    fatal_errors = [
+        "timeout",
+        "connection refused",
+        "no route to host",
+        "context deadline exceeded",
+        "connection attempt failed",
+    ]
+
+    if any(err in stderr_content for err in fatal_errors):
+        logData(f"[TOOL NODE] -> FATAL ERROR detected for {target}: {stderr_content}")
+        logData(
+            f"[TOOL NODE] -> Host is unreachable. Incrementing target_index and skipping."
+        )
+
+        return {
+            "target_index": state.target_index + 1,
+            "decision": "plan",
+            "memory": state.memory,
+        }
+
     if rawOutput.get("stderr"):
         logData(
-            f"[TOOL NODE] -> tool encountered following error: {str(rawOutput.get("stderr"))}"
+            f"[TOOL NODE] -> tool encountered following error: {str(rawOutput.get('stderr'))}"
         )
+
     logData(
         message=f"[TOOL NODE] -> exit node - tool call was successful: {rawOutput.get('success','')}"
     )
@@ -437,9 +490,8 @@ async def toolNode(state: gobusterAgentState):
 
 
 def parseOutputNode(state: gobusterAgentState):
-
     logData("[PARSE NODE] -> enter node")
-
+    current_target = state.target[state.target_index]
     rawOutput = state.memory.last_tool_output
 
     if not rawOutput:
@@ -447,13 +499,11 @@ def parseOutputNode(state: gobusterAgentState):
 
     parsed = parseGobusterOutput(rawOutput)
 
-    endpoints = parsed["endpoints"]
+    existing_paths = {e.base_url + e.path.rstrip("/") for e in state.memory.endpoints}
 
-    existing_paths = {e.path.rstrip("/") for e in state.memory.endpoints}
-
-    for e in endpoints:
-
-        normalized = e["path"].rstrip("/")
+    for e in parsed["endpoints"]:
+        e["base_url"] = current_target
+        normalized = current_target + e["path"].rstrip("/")
 
         if normalized not in existing_paths:
             state.memory.endpoints.append(gobusterEndpoint(**e))
@@ -461,10 +511,7 @@ def parseOutputNode(state: gobusterAgentState):
 
     state.memory.signals.extend(parsed["signals"])
 
-    return {
-        "memory": state.memory,
-        "decision": "evaluate",
-    }
+    return {"memory": state.memory, "decision": "evaluate"}
 
 
 async def evaluateNode(state: gobusterAgentState):
@@ -472,17 +519,32 @@ async def evaluateNode(state: gobusterAgentState):
     memory = state.memory
     feedback = state.feedback
 
+    currentTarget = state.target[state.target_index]
+
+    recent_endpoints = [
+        e.path for e in memory.endpoints if e.base_url == currentTarget
+    ][-15:]
+    memory_summary = f"""
+        - Current Target: {currentTarget}
+        - Scans performed on this target: {len([s for s in memory.scans_performed if s['url'] == currentTarget])}
+        - Endpoints found for this target: {len([e for e in memory.endpoints if e.base_url == currentTarget])}
+        - Recent paths: {recent_endpoints}
+        - Key signals: {memory.signals}
+        """
+
     if state.error_detected:
+        errorMsg = str(memory.last_tool_output.get("stderr", ""))[-500:]
         prompt = f"""
         [INFO]
         You are a profesional evaluator of the current state of host enumeration.
         
         [WARNING]
         During tool execution we encountered an error listed bellow:
-        {memory.last_tool_output}
+        {errorMsg}
         
-        [MEMORY]
-        {memory}
+        [MEMORY SUMMARY]
+
+        {memory_summary}
         
         [TASK]
         Your job is to do following 3 things:
@@ -493,17 +555,18 @@ async def evaluateNode(state: gobusterAgentState):
             > Give your reasoning for your decisions.
         
         Return a valid JSON:
+        - reasoning
         - confidence
         - feedback
-        - reasoning
         """
     else:
         prompt = f"""
         [INFO]
         You are a profesional evaluator of the current state of host enumeration.
         
-        [MEMORY]
-        {memory}
+        [MEMORY SUMMARY]
+
+        {memory_summary}
         
         [TASK]
         Your job is to do following 3 things:
@@ -514,9 +577,9 @@ async def evaluateNode(state: gobusterAgentState):
             > Give your reasoning for your decisions.
                 
         Return a valid JSON:
+        - reasoning
         - confidence
         - feedback
-        - reasoning
         """
 
     feedbackFull = await llm.with_structured_output(
@@ -530,73 +593,66 @@ async def evaluateNode(state: gobusterAgentState):
     state.feedback = feedback
 
     if feedback.feedback == "error":
-        state.fail_reason = f"""
-        Error encountered was too severe.
-        
-        Reasoning:
-        {feedback.reasoning} 
-        """
 
+        logData(
+            f"[EVALUATE NODE] -> Critical error on {currentTarget}. Skipping to next."
+        )
         return {
-            "feedback": state.feedback,
-            "fail": True,
-            "fail_reason": state.fail_reason,
-            "decision": "stop",
-        }
-
-    else:
-        return {
-            "feedback": state.feedback,
+            "target_index": state.target_index + 1,
             "decision": "continue",
+            "error_detected": False,
         }
+
+    if feedback.feedback == "done":
+        logData(
+            f"[EVALUATE NODE] -> Finished with {currentTarget}. Moving to next target."
+        )
+        return {
+            "target_index": state.target_index + 1,
+            "decision": "continue",
+            "error_detected": False,
+        }
+
+    return {
+        "decision": "continue",
+        "error_detected": False,
+    }
 
 
 async def crawlerNode(state: gobusterAgentState):
     logData(message="[CRAWLER NODE] -> enter node")
 
     endpoints = state.memory.endpoints
-    # count = countData(endpoints=endpoints)
     output = state.gobuster_output
 
-    target = state.target
-
-    if not target:
-        match = re.search(r"https?://[^\s]+", state.objective)
-        if match:
-            target = match.group(0)
-
-        else:
-            raise ValueError("Crawler cannot run because target is None")
+    if not endpoints:
+        logData("[CRAWLER NODE] -> No endpoints found to crawl. Exiting.")
+        return {
+            "decision": "done",
+            "gobuster_output": state.gobuster_output,
+        }
 
     crawlerInput = {
-        "target": target,
         "endpoints": [e.model_dump() for e in endpoints],
     }
-    logData(message=f"[CRAWLER NODE] -> initial endpoints:\n\n{endpoints}")
-    logData(message=f"[CRAWLER NODE] -> crawler input:\n\n{crawlerInput}")
-    logData(message="[CRAWLER NODE] -> starting crawler...")
+
+    logData(
+        message=f"[CRAWLER NODE] -> Processing {len(endpoints)} total endpoints from all targets."
+    )
 
     try:
-
         crawlerOutput = await crawlerMain(payload=crawlerInput)
         output.crawler_result = crawlerOutput
-        print(f"[CRAWLER OUTPUT]: {json.dumps(crawlerOutput, indent=4)}")
-        logData(message="[CRAWLER NODE] -> crawling successful -> exit node")
+
+        logData(message="[CRAWLER NODE] -> Crawling successful for all targets.")
         return {
             "decision": "done",
             "gobuster_output": state.gobuster_output,
         }
 
     except Exception as e:
-        state.fail_reason = f"""
-        Crawler encountered following error:
-        
-        {str(e)}
-        """
-        logData(
-            message=f"[CRAWLER NODE] -> crawler encountered following error:{str(e)}"
-        )
-        logData(message="[CRAWLER NODE] -> crawling failed -> exit node")
+        state.fail_reason = f"Crawler error: {str(e)}"
+        logData(message=f"[CRAWLER NODE] -> Error: {str(e)}")
         return {
             "decision": "done",
             "fail": True,
@@ -825,17 +881,29 @@ def retrieveCurrentDecision(state: gobusterAgentState):
 
 
 def extractArguments():
-    allowedModes = set()
+    allowedModes = {"dir", "dns", "vhost"}
     allowedFlags = set()
 
-    commands = ALLOWED_ARGS.get("commands", {})
+    for category, content in ALLOWED_ARGS.items():
 
-    for category in commands.values():
-        for cmd in category.get("safe", []):
-            allowedModes.add(cmd["name"])
+        if isinstance(content, dict):
+            for group in content.values():
+                for item in group:
 
-            for arg in cmd.get("allowed_args", []):
-                allowedFlags.add(arg["name"])
+                    if isinstance(item, dict) and "name" in item:
+                        allowedFlags.add(item["name"].split()[0])
+
+                    elif isinstance(item, str):
+                        allowedFlags.add(item.split()[0])
+
+        elif isinstance(content, list):
+            for item in content:
+
+                if isinstance(item, dict) and "name" in item:
+                    allowedFlags.add(item["name"].split()[0])
+
+                elif isinstance(item, str):
+                    allowedFlags.add(item.split()[0])
 
     return allowedModes, allowedFlags
 
@@ -950,6 +1018,7 @@ def gobusterBuilder():
         {
             "evaluate": "evaluate_node",
             "parse": "parse_output_node",
+            "plan": "planning_node",
         },
     )
     workflow.add_edge("parse_output_node", "evaluate_node")
