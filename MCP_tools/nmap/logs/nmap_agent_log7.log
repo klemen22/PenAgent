@@ -1,6 +1,0 @@
-2026-03-25 14:00:56,121 | INFO | [INIT NODE] -> enter node
-2026-03-25 14:00:56,121 | INFO | [INIT NODE] -> targets extracted from objective: ['192.168.157.0/24', '192.168.157.0']
-2026-03-25 14:00:56,121 | INFO | [INIT NODE] -> network detected ['192.168.157.0/24', '192.168.157.0'] -> discovery required
-2026-03-25 14:00:56,121 | INFO | [PLANNING NODE] -> enter node
-2026-03-25 14:00:56,122 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
-2026-03-25 14:00:56,122 | INFO | [TOOL CALL NODE] -> enter node

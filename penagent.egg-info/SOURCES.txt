@@ -26,6 +26,7 @@ MCP_tools/sqlmap/sqlmap_tool.py
 Orchestrator/__init__.py
 Orchestrator/import_solving.py
 Orchestrator/orchestartor_agent_ollamaV2.py
+Orchestrator/orchestartor_agent_ollamaV3.py
 Orchestrator/orchestrator_agent.py
 Orchestrator/memory/__init__.py
 Orchestrator/memory/agent_output.py
@@ -36,3 +37,5 @@ penagent.egg-info/PKG-INFO
 penagent.egg-info/SOURCES.txt
 penagent.egg-info/dependency_links.txt
 penagent.egg-info/top_level.txt
+reasoning/__init__.py
+reasoning/reasoning_logger.py

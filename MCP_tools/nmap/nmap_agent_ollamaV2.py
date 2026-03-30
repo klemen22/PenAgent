@@ -9,14 +9,15 @@ import logging
 from pathlib import Path
 import re
 import ipaddress
+import shlex
+import json
 
 load_dotenv()
 
 from MCP_tools.nmap.nmap_toolV2 import nmap_scan, nmapInput
 from Orchestrator.memory.agent_output import AgentOutput, HostMemory, portInfo
 from metadata.metadata_logger import setupMetadataLogger, logMetadata, logTotalTokens
-
-# TODO: check if async is really needed or if you can convert code back to sync?
+from reasoning.reasoning_logger import setupReasoningLogger, logReasoning
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -34,6 +35,7 @@ llm = ChatOllama(
     temperature=0.1,
     num_ctx=TOKEN_WINDOW_SIZE,
     format=None,
+    system="You are a specialized cybersecurity assistant. You MUST always respond in English. Do not use any other languages under any circumstances.",
 )
 
 finalAgent = llm.bind_tools([nmap_scan])
@@ -45,13 +47,15 @@ for log in os.listdir(logDir):
     if os.path.isfile(os.path.join(logDir, log)):
         logCount += 1
 
-import json
 
 with open("MCP_tools/nmap/nmap_allowed_arguments.json") as f:
     ALLOWED_ARGS = json.load(f)
 
 
 setupMetadataLogger(AGENT_NAME)
+setupReasoningLogger(AGENT_NAME)
+
+logReasoning(agentName=AGENT_NAME, reasoning=f" {20 * "="} NMAP REASONING {20 * "="} ")
 
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
@@ -88,7 +92,7 @@ class nmapToolCall(BaseModel):
     target: str
     scan_type: str
     ports: Optional[List[int]] = Field(default_factory=list)
-    additional_args: Optional[List[str]] = Field(default_factory=list)
+    additional_args: Optional[str] = Field(default="")
 
 
 """
@@ -196,6 +200,10 @@ async def initNode(state: nmapAgentState):
         logData(
             f"[INIT NODE] -> network detected {networkTargets} -> discovery required"
         )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[INIT] Network detected {networkTargets} -> discovery required.",
+        )
 
         return {
             "host_discovery": hostDiscovery(
@@ -219,6 +227,10 @@ async def initNode(state: nmapAgentState):
     state.host_discovery.done = True
 
     logData(f"[INIT NODE] -> skipping host discovery, using direct hosts: {ipTargets}")
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[INIT] Skipping host discovery, using direct hosts: {ipTargets}.",
+    )
 
     return {
         "host_memory": state.host_memory,
@@ -233,10 +245,18 @@ async def planningNode(state: nmapAgentState):
 
     if not state.host_discovery.done:
         logData(message="[PLANNING NODE] -> exit node: moving to host discovery.")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning="[PLANNING] Moving to host discovery.",
+        )
         return {"decision": "continue"}
 
     # all hosts were scanned
     if state.host_discovery.done and state.host_index >= len(state.discovered_hosts):
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] All hosts were scanned moving to summary.",
+        )
         return {"decision": "stop", "done": True}
 
     currentMemory = getCurrentHost(state=state)
@@ -315,6 +335,10 @@ async def planningNode(state: nmapAgentState):
 
             logMetadata(agent_name=AGENT_NAME, metadata=outPutPlanRaw.response_metadata)
             logData(message=f"[PLANNING NODE] -> created new plan: {outputPlan}")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[PLANNING] {outputPlan.reasoning}",
+            )
 
             currentMemory.plan = outputPlan.steps
             currentMemory.step_index = 0
@@ -388,8 +412,8 @@ async def selectToolCall(state: nmapAgentState):
         3. Order matters: Flags that require a value MUST be followed immediately by that value.
         4. Do not repeat the target IP in additional_args.
 
-        BAD EXAMPLE: "additional_args": ["100", "--open", "--top-ports"]
-        GOOD EXAMPLE: "additional_args": ["--top-ports", "100", "--open"]
+        BAD EXAMPLE: "additional_args": '100 --open --top-ports'
+        GOOD EXAMPLE: "additional_args": '--top-ports 100 --open'
         
         Return ONLY JSON in the following format:
         {{
@@ -397,7 +421,7 @@ async def selectToolCall(state: nmapAgentState):
             "target": <IP address, hostname or CIDR>,
             "scan_type": <List of nmap scan arguments (ex. -sS -sV)>,
             "ports": <A JSON list of integers (e.g., [80, 443]), or an empty list [] if no specific ports are targeted>,
-            "additional_args": <A JSON list of an additional nmap arguments (e.g., ["-T4", "--open"]), or empty list [] if non are needed>,
+            "additional_args": <A string of space seperated additional nmap arguments (e.g., '-T4 --open'), or empty list '' if non are needed>,
         }}
             
         CORRECT EXAMPLES:
@@ -408,7 +432,7 @@ async def selectToolCall(state: nmapAgentState):
             "target": "10.10.10.0/24",
             "scan_type": "-sn",
             "ports": [],
-            "additional_args": [], 
+            "additional_args": "", 
         }}
 
         You MUST return valid JSON only.
@@ -452,6 +476,10 @@ async def selectToolCall(state: nmapAgentState):
         logData(f"[SELECT TOOL CALL] -> raw produced tool call: {toolCall}")
         logData(
             message=f"[SELECT TOOL CALL] -> reasoning for current tool call: {toolCall.reasoning}"
+        )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[SELECT TOOL CALL] {toolCall.reasoning}",
         )
         logData(message=f"[SELECT TOOL CALL] -> exit node")
 
@@ -526,8 +554,8 @@ async def selectToolCall(state: nmapAgentState):
     - Always prefer scanning top ports (e.g., using '--top-ports 100') or specific common ports first.
     - If you suspect a host is up but 'standard' ports are closed, use '--top-ports 1000' instead of '-p-'.
     
-    BAD EXAMPLE: "additional_args": ["100", "--open", "--top-ports"]
-    GOOD EXAMPLE: "additional_args": ["--top-ports", "100", "--open"]
+    BAD EXAMPLE: "additional_args": '100 --open --top-ports'
+    GOOD EXAMPLE: "additional_args": '--top-ports 100 --open'
 
     Return ONLY JSON in the following format:
     {{
@@ -535,7 +563,7 @@ async def selectToolCall(state: nmapAgentState):
         "target": <IP address, hostname or CIDR>,
         "scan_type": <List of nmap scan arguments (ex. -sS -sV)>,
         "ports": <A JSON list of integers (e.g., [80, 443]), or an empty list [] if no specific ports are targeted>,
-        "additional_args": <A JSON list of an additional nmap arguments (e.g., ["-T4", "--open"]), or empty list [] if non are needed>,
+            "additional_args": <A string of space seperated additional nmap arguments (e.g., '-T4 --open'), or empty list '' if non are needed>,
     }}
         
     CORRECT EXAMPLES:
@@ -546,7 +574,7 @@ async def selectToolCall(state: nmapAgentState):
         "target": "10.10.10.0/24",
         "scan_type": "-sn",
         "ports": [],
-        "additional_args": [],
+        "additional_args": "",
         
     }}
     
@@ -556,7 +584,7 @@ async def selectToolCall(state: nmapAgentState):
         "target": "10.10.10.2",
         "scan_type": "-sV",
         "ports": [80, 443, 8080],
-        "additional_args": ["-T4", "--open"],
+        "additional_args": "-T4 --open",
         
     }}
 
@@ -583,6 +611,10 @@ async def selectToolCall(state: nmapAgentState):
         logData(f"[SELECT TOOL CALL] -> raw produced tool call: {toolCall}")
         logData(
             message=f"[SELECT TOOL CALL] -> reasoning for current tool call: {toolCall.reasoning}"
+        )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[SELECT TOOL CALL] {toolCall.reasoning}",
         )
 
         if validateToolCall(toolCall=toolCall):
@@ -620,7 +652,6 @@ async def toolExecuteNode(state: nmapAgentState):
     hostDiscovery = state.host_discovery
 
     if not hostDiscovery.done and hostDiscovery:
-        hostDiscoveryToolCall = hostDiscovery.currentToolCall
 
         if not hostDiscovery.currentToolCall:
             logData(
@@ -639,19 +670,12 @@ async def toolExecuteNode(state: nmapAgentState):
                 if isinstance(tool.ports, list)
                 else (tool.ports or "")
             )
-
-            args = (
-                " ".join(map(str, tool.additional_args))
-                if isinstance(tool.additional_args, list)
-                else (tool.additional_args or "")
-            )
-
             rawOutput = await nmap_scan(
                 nmapInput(
                     target=tool.target,
                     scan_type=tool.scan_type,
                     ports=ports,
-                    additional_args=args,
+                    additional_args=tool.additional_args,
                 )
             )
         except Exception as e:
@@ -685,18 +709,12 @@ async def toolExecuteNode(state: nmapAgentState):
             else (currentToolCall.ports or "")
         )
 
-        args = (
-            " ".join(map(str, currentToolCall.additional_args))
-            if isinstance(currentToolCall.additional_args, list)
-            else (currentToolCall.additional_args or "")
-        )
-
         rawOutput = await nmap_scan(
             nmapInput(
                 target=currentToolCall.target,
                 scan_type=currentToolCall.scan_type,
                 ports=ports,
-                additional_args=args,
+                additional_args=currentToolCall.additional_args,
             )
         )
     except Exception as e:
@@ -880,7 +898,6 @@ async def evaluateNode(state: nmapAgentState):
     - reasoning
     - decision <one of [continue, replan, finish_host]>
     - confidence <a number between 0.0 and 1.0>
-
     """
 
     feedbackFull = await llm.with_structured_output(
@@ -892,6 +909,10 @@ async def evaluateNode(state: nmapAgentState):
 
     currentMemory.feedback = feedback
 
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[EVALUATE] {feedback.reasoning}",
+    )
     logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
 
     state.iteration += 1
@@ -909,6 +930,10 @@ async def evaluateNode(state: nmapAgentState):
 
     if decision == "finish_host":
         logData(f"[EVALUATE] -> agent decided to finish host {currentMemory.ip}")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[EVALUATE] Agent decided to finish host {currentMemory.ip}.",
+        )
         state.host_index += 1
         return {
             "decision": "plan",
@@ -920,6 +945,10 @@ async def evaluateNode(state: nmapAgentState):
         currentMemory.replan_count += 1
         if currentMemory.replan_count >= currentMemory.max_replans:
             logData("[EVALUATE] -> max replans reached, moving to next host.")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning="[EVALUATE] Max replans reached, moving to next host.",
+            )
             state.host_index += 1
             return {
                 "decision": "plan",
@@ -929,6 +958,10 @@ async def evaluateNode(state: nmapAgentState):
 
         currentMemory.replan_flag = True
         currentMemory.replan_reason = feedback.reasoning
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[EVALUATE] {feedback.reasoning}",
+        )
         return {"decision": "replan", "host_memory": state.host_memory}
 
     currentMemory.step_index += 1
@@ -983,6 +1016,14 @@ async def outputNode(state: nmapAgentState):
     logTotalTokens(agent_name=AGENT_NAME)
     state.summary = response.content
     logData(message="[OUTPUT NODE] -> exit node - summary done")
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f" {20 * "="} NMAP SUMMARY {20 * "="} ",
+    )
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[SUMMARY] {response.content}",
+    )
 
     if state.fail:
         return {
@@ -1045,82 +1086,112 @@ def extractTargets(prompt: str):
 
 
 def normalizeToolCall(toolCall: nmapToolCall):
-
     if "-p" in toolCall.scan_type:
-
         extracted_ports = re.findall(r"-p\s*([\d,]+)", toolCall.scan_type)
         if extracted_ports:
-            new_ports = [int(p) for p in extracted_ports[0].split(",") if p.isdigit()]
-            toolCall.ports = list(set(toolCall.ports + new_ports))
+            new_ports = []
+            for part in extracted_ports[0].split(","):
+                if part.strip().isdigit():
+                    new_ports.append(int(part.strip()))
+
+            existing = toolCall.ports if toolCall.ports else []
+            toolCall.ports = list(set(existing + new_ports))
 
         toolCall.scan_type = re.sub(r"-p\s*[\d,]+", "", toolCall.scan_type).strip()
         toolCall.scan_type = toolCall.scan_type.replace("-p-", "").strip()
-
-    toolCall.additional_args = list(set(toolCall.additional_args))
 
     return toolCall
 
 
 def normalizeAdditionalArgs(toolCall: nmapToolCall) -> nmapToolCall:
-    cleaned = []
+    if not toolCall.additional_args:
+        toolCall.additional_args = ""
+        return toolCall
 
-    for arg in toolCall.additional_args:
-        arg = arg.strip()
+    try:
+        parts = shlex.split(toolCall.additional_args)
+        cleaned_parts = [p.strip() for p in parts if p.strip()]
+        toolCall.additional_args = " ".join(cleaned_parts)
+    except Exception as e:
+        logData(f"[NORMALIZE] -> error parsing additional_args: {e}")
+        toolCall.additional_args = " ".join(toolCall.additional_args.split())
 
-        parts = arg.split()
-
-        for p in parts:
-            cleaned.append(p)
-
-    toolCall.additional_args = cleaned
     return toolCall
+
+
+import re
 
 
 def validateToolCall(toolCall: nmapToolCall):
     if not toolCall.target or not toolCall.scan_type:
         return False
 
-    all_args_text = (
-        f"{toolCall.scan_type} {' '.join(map(str, toolCall.additional_args))}"
-    )
-    forbidden_chars = {";", "&&", "|", "`", "$", "(", ")"}
-    if any(char in all_args_text for char in forbidden_chars):
+    full_command_string = f"{toolCall.scan_type} {toolCall.additional_args}"
+    forbidden_chars = {";", "&&", "||", "|", "`", "$", "(", ")", ">", "<"}
+    if any(char in full_command_string for char in forbidden_chars):
+        logData("[VALIDATION] -> rejected: forbidden characters detected!")
         return False
 
-    if "-p" in toolCall.scan_type.lower():
+    p_flag_pattern = r"\b-p\b"
+    if re.search(p_flag_pattern, toolCall.scan_type.lower()) or re.search(
+        p_flag_pattern, toolCall.additional_args.lower()
+    ):
+        logData(
+            "[VALIDATION] -> rejected: -p found in arguments (use ports field instead)"
+        )
         return False
 
     is_discovery = "-sn" in toolCall.scan_type
     has_ports = len(toolCall.ports) > 0 if toolCall.ports else False
     if is_discovery:
-        forbidden_discovery = ["-sS", "-sT", "-sV", "-O", "-sC"]
-        if has_ports or any(flag in toolCall.scan_type for flag in forbidden_discovery):
+        forbidden_discovery = ["-sS", "-sT", "-sV", "-O", "-sC", "--top-ports"]
+        if has_ports:
+            logData("[VALIDATION] -> rejected: host discovery (-sn) cannot have ports")
             return False
+        for f_flag in forbidden_discovery:
+            if re.search(rf"\b{re.escape(f_flag)}\b", full_command_string):
+                logData(f"[VALIDATION] -> rejected: host discovery cannot use {f_flag}")
+                return False
 
     allowed_flags = set()
     for cat in ALLOWED_ARGS.values():
-        items = (
-            cat
-            if isinstance(cat, list)
-            else cat.get("safe", []) + cat.get("aggressive", [])
-        )
+        items = []
+        if isinstance(cat, list):
+            items = cat
+        elif isinstance(cat, dict):
+            items = (
+                cat.get("safe", [])
+                + cat.get("aggressive", [])
+                + cat.get("high_risk", [])
+                + cat.get("stealth_evasion", [])
+            )
+
         for item in items:
             allowed_flags.add(item["name"].split()[0])
 
-    current_flags = toolCall.scan_type.split() + toolCall.additional_args
-    for flag in current_flags:
-        flag_str = str(flag)
+    try:
+        current_args_list = shlex.split(
+            f"{toolCall.scan_type} {toolCall.additional_args}"
+        )
+        for arg in current_args_list:
+            if arg.startswith("-"):
+                base_flag = arg.split("=")[0]
 
-        if not flag_str.startswith("-"):
-            continue
+                is_dynamic_flag = any(
+                    base_flag.startswith(f) for f in ["-PS", "-PA", "-PU", "-D"]
+                )
 
-        base_flag = flag_str.split("=")[0]
-        if base_flag not in allowed_flags:
-            logData(f"[VALIDATION] -> Rejected unknown flag: {base_flag}")
-            return False
-
-    if toolCall.ports and not all(isinstance(p, int) for p in toolCall.ports):
+                if base_flag not in allowed_flags and not is_dynamic_flag:
+                    logData(f"[VALIDATION] -> rejected unknown flag: {base_flag}")
+                    return False
+    except Exception as e:
+        logData(f"[VALIDATION] -> shlex error: {e}")
         return False
+
+    if toolCall.ports:
+        if not all(isinstance(p, int) for p in toolCall.ports):
+            logData("[VALIDATION] -> rejected: ports must be a list of integers")
+            return False
 
     return True
 

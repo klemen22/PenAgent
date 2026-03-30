@@ -1,0 +1,33 @@
+2026-03-30 11:13:56,952 | INFO | [INIT NODE] -> enter node
+2026-03-30 11:13:56,952 | INFO | [INIT NODE] -> targets provided by orchestrator: ['192.168.157.0/24']
+2026-03-30 11:13:56,952 | INFO | [INIT NODE] -> network detected ['192.168.157.0/24'] -> discovery required
+2026-03-30 11:13:56,953 | INFO | [PLANNING NODE] -> enter node
+2026-03-30 11:13:56,953 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-30 11:13:56,953 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-30 11:14:01,789 | INFO | [SELECT TOOL CALL] -> raw produced tool call: reasoning='Performing host discovery using a ping scan to identify active hosts in the subnet without port scanning.' target='192.168.157.0/24' scan_type='-sn' ports=[] additional_args=''
+2026-03-30 11:14:01,789 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: Performing host discovery using a ping scan to identify active hosts in the subnet without port scanning.
+2026-03-30 11:14:01,789 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-30 11:14:01,790 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-30 11:14:03,844 | INFO | [EXECUTE TOOL] -> exit node - discovery done
+2026-03-30 11:14:03,845 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-30 11:14:03,846 | INFO | [PLANNING NODE] -> enter node
+2026-03-30 11:14:03,846 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-30 11:14:03,847 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-30 11:14:09,673 | INFO | [SELECT TOOL CALL] -> raw produced tool call: reasoning='The initial host discovery attempt failed due to a connection refused error. To resolve this, we will use ICMP echo discovery (-PE) which does not require DNS resolution or additional service dependencies. This method is effective for basic host discovery without port scanning.' target='192.168.157.0/24' scan_type='-PE' ports=[] additional_args=''
+2026-03-30 11:14:09,673 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: The initial host discovery attempt failed due to a connection refused error. To resolve this, we will use ICMP echo discovery (-PE) which does not require DNS resolution or additional service dependencies. This method is effective for basic host discovery without port scanning.
+2026-03-30 11:14:09,673 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-30 11:14:09,674 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-30 11:14:11,733 | INFO | [EXECUTE TOOL] -> exit node - discovery done
+2026-03-30 11:14:11,734 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-30 11:14:11,735 | INFO | [PLANNING NODE] -> enter node
+2026-03-30 11:14:11,735 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-30 11:14:11,736 | INFO | [TOOL CALL NODE] -> enter node
+2026-03-30 11:14:18,247 | INFO | [SELECT TOOL CALL] -> raw produced tool call: reasoning='The initial host discovery attempt failed due to a connection refusal. Switching to ICMP echo discovery (-PE) to avoid relying on the nmap server connection and directly identify active hosts in the subnet.' target='192.168.157.0/24' scan_type='-PE' ports=[] additional_args='--open'
+2026-03-30 11:14:18,247 | INFO | [SELECT TOOL CALL] -> reasoning for current tool call: The initial host discovery attempt failed due to a connection refusal. Switching to ICMP echo discovery (-PE) to avoid relying on the nmap server connection and directly identify active hosts in the subnet.
+2026-03-30 11:14:18,248 | INFO | [SELECT TOOL CALL] -> exit node
+2026-03-30 11:14:18,248 | INFO | [EXECUTE TOOL] -> enter node
+2026-03-30 11:14:20,291 | INFO | [EXECUTE TOOL] -> exit node - discovery done
+2026-03-30 11:14:20,291 | INFO | [PARSE OUTPUT] -> enter node
+2026-03-30 11:14:20,292 | INFO | [PLANNING NODE] -> enter node
+2026-03-30 11:14:20,292 | INFO | [PLANNING NODE] -> exit node: moving to host discovery.
+2026-03-30 11:14:20,293 | INFO | [TOOL CALL NODE] -> enter node

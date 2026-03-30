@@ -2,3 +2,4 @@ MCP-Kali-Server
 MCP_tools
 Orchestrator
 metadata
+reasoning

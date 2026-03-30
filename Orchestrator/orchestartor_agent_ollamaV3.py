@@ -17,6 +17,7 @@ from MCP_tools.nmap.nmap_agent_ollamaV2 import nmapBuilder
 from MCP_tools.gobuster.gobuster_agent_ollamaV2 import gobusterBuilder
 from MCP_tools.sqlmap.sqlmap_agent_ollamaV3 import sqlmapBuilder
 from metadata.metadata_logger import setupMetadataLogger, logMetadata
+from reasoning.reasoning_logger import setupReasoningLogger, logReasoning
 from memory.agent_output import portInfo, HostMemory, attackVector, vulnerability
 
 # output schema
@@ -67,7 +68,11 @@ AGENT_REQUIREMENTS = {"nmap": [], "crawler": [], "sqlmap": ["attack_vectors"]}
 AGENT_NAME = "orchestrator_agent"
 
 setupMetadataLogger(agent_name=AGENT_NAME)
+setupReasoningLogger(agentName=AGENT_NAME)
 
+logReasoning(
+    agentName=AGENT_NAME, reasoning=f" {20 * "="} ORCHESTRATOR REASONING {20 * "="} "
+)
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
 # ------------------------------------------------------------------------------- #
@@ -83,6 +88,7 @@ llm = ChatOllama(
     temperature=0.1,
     format=None,
     num_ctx=TOKEN_WINDOW_SIZE,
+    system="You are a specialized cybersecurity assistant. You MUST always respond in English. Do not use any other languages under any circumstances.",
 )
 
 logDir = Path("Orchestrator\logs")
@@ -183,7 +189,7 @@ class expansionOutput(BaseModel):
 
 
 class executorOutput(BaseModel):
-    agent: Optional[Literal["nmap", "gobuster", "sqlmap"]] = Field(default=None)
+    agent: Literal["nmap", "gobuster", "sqlmap"]
     agent_prompt: str = Field(default="")
     target_host: Optional[List[str]] = Field(
         default=None, description="The specific IP or URL to target"
@@ -223,11 +229,11 @@ class reasoningNodeOutput(BaseModel):
 
 
 class evaluateNodeOutput(BaseModel):
+    reasoning: Optional[str] = Field(default=None)
     decision: Optional[Literal["success", "retry", "expand", "replan"]] = Field(
         default=None
     )
     confidence: float = Field(default=0.0)
-    reasoning: Optional[str] = Field(default=None)
 
 
 class agentCounter(BaseModel):
@@ -298,78 +304,97 @@ async def planningNode(state: orchestratorState):
 
     reason = state.reasoning
 
+    completedTasks = []
+    if state.task_queue and state.task_queue.queue:
+        completedTasks = [task for task in state.task_queue.queue if task.done]
+
+    taskSummary = "\n".join(
+        [f"- ID {t.id}: {t.agent} ({t.description}) -> DONE" for t in completedTasks]
+    )
+
     if reason.route == "replan":
         logData(message="[PLANNING NODE] -> replanning...")
         prompt = f"""
         [REPLANNING]
-        
-        You are a cybersecurity planning agent.
-        The current task queue must be replaced with a new plan.
+        You are a cybersecurity planning agent. An error or a change in circumstances occurred.
+        Your job is to update the plan without repeating work that is already finished.
 
-        Objective:
+        [OBJECTIVE]
         {state.objective}
-
-        Discovered hosts:
-        {state.discovered_hosts}
-
-        Host memory:
-        {state.host_memory}
-
-        Attack vectors:
-        {state.attack_vectors}
-
-        Vulnerabilities:
-        {state.vulnerabilities}
-
-        Feedback from evaluation:
-        {state.evaluate.reasoning}
         
-        [FEEDBACK FROM REASONING]
+        [ALREADY FINISHED TASKS]
+        {taskSummary if taskSummary else "No tasks finished yet."}
+
+        [CURRENT CONTEXT]
+        > Discovered hosts: {state.discovered_hosts}
+        > Host memory: {state.host_memory}
+        > Attack vectors: {state.attack_vectors}
+        > Vulnerabilities: {state.vulnerabilities}
+            
+        [WHY ARE WE REPLANNING?]
+        Feedback from evaluator: {state.evaluate.reasoning}
+        Reasoning: {reason.reasoning}
         
-        {reason.reasoning}
-    
-        Rules:
+        [TASK]
+        Create a NEW set of tasks to complete the objective from where we left off.
+        DO NOT include tasks that are already marked as DONE.
+        Focus on the remaining steps (e.g., if nmap is done, focus on gobuster/sqlmap).
+        
+        [AVAILABLE TOOLS]
+        - nmap -> host discovery, host and port scanning, service discovery,...
+        - gobuster -> combined with crawler enables detailed host scan for discovering any active endpoints
+        - sqlmap -> scans target for any potential injection exploits and perform them 
+        
+        CURRENTLY EXPLOITING IS ONLY DONE WITH SQLMAP
+        
+        [RULES]
         - produce between 3 and 10 tasks
         - tasks must be ordered
+        - tasks must be actionable
         - tasks must map to agents (nmap, gobuster, sqlmap)
 
-        Return JSON:
+        [TASK]
+        Creat a plan.
+        Plan must be formulated as a queue with new actionable tasks:
+        - queue
+        
+        For each new task return JSON:
         - id (choose unique identifiers for tasks in ascending order)
         - agent (suggest agent and explain your decision in "description field")
-        - description 
+        - descriptiongetPendingTasks
         """
-
-    prompt = f"""
-    You are a cybersecurity planning agent.
-    
-    Your job is to break down the objective into a list of high level tasks required to perform a penetration test.
-    
-    Objective:
-    {state.objective}
-    
-    Rules:
-    - produce between 3 and 10 tasks
-    - tasks must be ordered
-    - tasks must be actionable
-    - tasks must be mapped to a security tool (nmap, gobuster, sqlmap)
-    
-    Currently available security tools:
-    - nmap -> host discovery, host and port scanning, service discovery,...
-    - gobuster -> combined with crawler enables detailed host scan for discovering any active endpoints
-    - sqlmap -> scans target for any potential injection exploits and perform them 
-    
-    CURRENTLY EXPLOITING IS ONLY DONE WITH SQLMAP
-    
-    Creat a plan.
-    
-    Plan must be formulated as a queue with actionable tasks:
-    - queue
-    
-    For each task return JSON:
-    - id (choose unique identifiers for tasks in ascending order)
-    - agent (suggest agent and explain your decision in "description field")
-    - descriptiongetPendingTasks
-    """
+    else:
+        prompt = f"""
+        [INITIAL PLANNING]
+        You are a cybersecurity planning agent.
+        Your job is to break down the objective into a list of high level tasks required to perform a penetration test.
+        
+        [OBJECTIVE]
+        {state.objective}
+        
+        [RULES]
+        - produce between 3 and 10 tasks
+        - tasks must be ordered
+        - tasks must be actionable
+        - tasks must be mapped to a security tool (nmap, gobuster, sqlmap)
+        
+        [AVAILABLE TOOLS]
+        - nmap -> host discovery, host and port scanning, service discovery,...
+        - gobuster -> combined with crawler enables detailed host scan for discovering any active endpoints
+        - sqlmap -> scans target for any potential injection exploits and perform them 
+        
+        CURRENTLY EXPLOITING IS ONLY DONE WITH SQLMAP
+        
+        [TASK]
+        Creat a plan.
+        Plan must be formulated as a queue with actionable tasks:
+        - queue
+        
+        For each task return JSON:
+        - id (choose unique identifiers for tasks in ascending order)
+        - agent (suggest agent and explain your decision in "description field")
+        - descriptiongetPendingTasks
+        """
     retries = 3
 
     logData(message="[PLANNING NODE] -> execute planning")
@@ -384,7 +409,19 @@ async def planningNode(state: orchestratorState):
             outputPlan = outputPlanFull["parsed"]
             outputPlanRaw = outputPlanFull["raw"]
             logData(message=f"[PLANNING NODE] -> plan: {outputPlan}")
-            state.task_queue = taskQueue(queue=outputPlan.queue)
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[PLANNING] \n{json.dumps(outputPlan.model_dump(), indent=4)}",
+            )
+            newTasks = outputPlan.queue
+            startID = len(completedTasks) + 1
+            for i, task in enumerate(newTasks):
+                task.id = startID + i
+                task.done = False
+
+            finalQueue = newTasks.extend(completedTasks) if completedTasks else newTasks
+
+            state.task_queue = taskQueue(queue=finalQueue)
             logData(message=f"[PLANNING NODE] -> exit node")
             logMetadata(agent_name=AGENT_NAME, metadata=outputPlanRaw.response_metadata)
 
@@ -479,6 +516,10 @@ async def routerNode(state: orchestratorState):
 
     if not pending_task and state.reasoning.route != "expand":
         logData(message="[ROUTING NODE] -> exit node (no more tasks left)")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning="[ROUTER] No more tasks left, stopping.",
+        )
         state.done = True
         reason.route = "stop"
         reason.reasoning = "All tasks are completed."
@@ -491,6 +532,10 @@ async def routerNode(state: orchestratorState):
 
     if state.iteration >= state.max_iterations:
         logData(message="[ROUTING NODE] -> exit node (max iteartions reached)")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning="[ROUTER] Max iterations reached, stopping.",
+        )
         state.fail = True
         reason.route = "stop"
         reason.reasoning = "Maximum number of iterations reached."
@@ -509,27 +554,51 @@ async def routerNode(state: orchestratorState):
         # evaluate node output
         if evaluateOutput.decision == "retry":
             logData("[ROUTING NODE] -> retry same task")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning="[ROUTER] Retrying same task.",
+            )
             reason.route = "retry"
 
         elif evaluateOutput.decision == "expand":
             logData("[ROUTING NODE] -> plan needs expansion")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning="[ROUTER] Plan needs expansion.",
+            )
             reason.route = "expand"
 
         elif evaluateOutput.decision == "replan":
             logData("[ROUTING NODE] -> replan is needed")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning="[ROUTER] Replanning is needed.",
+            )
             reason.route = "replan"
 
         elif evaluateOutput.decision == "success":
             logData("[ROUTING NODE] -> task completed moving to next task")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning="[ROUTER] Task completed, moving to next task.",
+            )
             reason.route = "new"
 
     elif reason.route in ["expand", "replan"]:
         logData(f"[ROUTING NODE] -> creating new plan after {reason.route}")
         reason.route = "new"
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[ROUTER] Selecting new task after {reason.route}",
+        )
 
     else:
         reason.route = "new"
         logData("[ROUTING NODE] -> selecting new task")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning="Selecting new task.",
+        )
     return {
         "iteration": state.iteration,
         "reasoning": state.reasoning,
@@ -593,7 +662,7 @@ async def reasoningNode(state: orchestratorState):
         
         Return valid JSON:
             {{
-                "task_ID": null,
+                "task_ID": None,
                 "reasoning": "STRATEGIC GUIDANCE: ..."
             }}
         """
@@ -623,7 +692,7 @@ async def reasoningNode(state: orchestratorState):
         
         Return JSON:
         {{
-            "task_ID": null,
+            "task_ID": None,
             "reasoning": "NEW TACTICAL DIRECTION: The previous approach failed because [REASON]. Shift focus to [NEW TARGET/METHOD]."
         }}
         """
@@ -668,8 +737,15 @@ async def reasoningNode(state: orchestratorState):
         output = outputFull["parsed"]
         outputRaw = outputFull["raw"]
 
+        if reason.route in ["replan", "expand"] and not output.task_ID == None:
+            output.task_ID = None
+
         logData(f"[REASONING NODE] -> selected task: {output.task_ID}")
         logData(f"[REASONING NODE] -> reasoning for selected task: {output.reasoning}")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[REASONING] Task {output.task_ID} was selected.\nReasoning: {output.reasoning}",
+        )
         logMetadata(agent_name=AGENT_NAME, metadata=outputRaw.response_metadata)
         reason.reasoning = output.reasoning
 
@@ -684,6 +760,10 @@ async def reasoningNode(state: orchestratorState):
     except Exception as e:
         # TODO: add error handling node fallback
         logData(f"[REASONING NODE] -> LLM failure: {str(e)}")
+        state.reasoning.route = "stop"
+        return {
+            "reasoning": state.reasoning,
+        }
 
     # reset evaluate node output
     evaluateOutput.decision = None
@@ -764,6 +844,15 @@ async def planExpansionNode(state: orchestratorState):
             f"[PLAN EXPANSION NODE] -> final task queue after changes: {state.task_queue.queue}"
         )
 
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLAN EXPANSION] New generated tasks:\n{json.dumps(output.new_tasks.model_dump(), indent=4)}",
+        )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLAN EXPANSION] Updated queue after expansion:\n{json.dumps(state.task_queue.queue, indent=4),}",
+        )
+
     except Exception as e:
         logData(f"[PLAN EXPANSION NODE] -> failed: {str(e)}")
 
@@ -793,6 +882,10 @@ async def agentExecutionNode(state: orchestratorState):
     host_summary = {
         ip: [p.port for p in h.open_ports] for ip, h in state.host_memory.items()
     }
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[AGENT EXECUTION] Preparing agent call for task {task.id}",
+    )
 
     prompt = f"""
     You are a cybersecurity tool agent. Create a specific call for a tool based on the task.
@@ -826,6 +919,10 @@ async def agentExecutionNode(state: orchestratorState):
     logMetadata(agent_name=AGENT_NAME, metadata=outputRaw.response_metadata)
 
     logData(message=f"[AGENT EXECTUION NODE] -> created an agent call: {output}")
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[AGENT EXECUTION] Created following for {output.agent}: {output.agent_prompt}",
+    )
 
     state.agent_call.agent = output.agent
     state.agent_call.task_ID = taskID
@@ -894,29 +991,36 @@ async def inputBuilderNode(state: orchestratorState):
         targets = extractGobusterTargets(prompt=prompt)
 
         if targets:
+            target_list = [targets] if isinstance(targets, str) else targets
+            sanitized_targets = []
+
+            for t in target_list:
+                if not t.startswith(("http://", "https://")):
+                    logData(
+                        f"[INPUT BUILDER] -> target {t} lacks protocol, prepending http://"
+                    )
+                    sanitized_targets.append(f"http://{t}")
+                    sanitized_targets.append(f"https://{t}")
+                else:
+                    sanitized_targets.append(t)
+
             logData(
-                f"[INPUT BUILDER] -> found a valid target [{targets}] for {agent} inside agent prompt"
+                f"[INPUT BUILDER] -> found a valid target {sanitized_targets} for {agent} inside agent prompt"
             )
-            state.agent_call.agent_input.targets = [targets]
+            state.agent_call.agent_input.targets = list(set(sanitized_targets))
 
             logData("[INPUT BUILDER] -> exit node")
             return {
                 "agent_call": state.agent_call,
             }
 
-        logData(
-            f"[INPUT BUILDER] -> no valid targets found for {agent} inside prompt, searching targets in agent state..."
-        )
-
         # 2. try to build targets from agent state
         savedTargets = []
-
         for ip, host in state.host_memory.items():
             for port in host.open_ports:
-                if port.port in [80, 443, 8080, 8843]:
-                    # append both http and https just in case
-                    savedTargets.append(f"http://{ip}:{port.port}")
-                    savedTargets.append(f"https://{ip}:{port.port}")
+                if port.port in [80, 443, 8080, 8443, 8843]:
+                    proto = "https" if port.port in [443, 8443] else "http"
+                    savedTargets.append(f"{proto}://{ip}:{port.port}")
 
         if savedTargets:
             state.agent_call.agent_input.targets = savedTargets
@@ -995,6 +1099,7 @@ async def nmapAgentNode(state: orchestratorState):
             logData(
                 "================================ NMAP AGENT start ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="NMAP AGENT start")
             result = await NMAP_GRAPH.ainvoke(
                 {
                     "objective": agentCall.agent_input.prompt,
@@ -1005,6 +1110,7 @@ async def nmapAgentNode(state: orchestratorState):
             logData(
                 "================================ NMAP AGENT stop ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="NMAP AGENT stop")
 
             agent_output = result.get("agent_output")
             logData(f"\n[NMAP NODE] -> Raw full output:\n\n{result}")
@@ -1067,6 +1173,7 @@ async def gobusterAgentNode(state: orchestratorState):
             logData(
                 "================================ GOBUSTER AGENT start ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="GOBUSTER AGENT start")
 
             logData(f"[GOBUSTER NODE] -> target: {agentCall.agent_input.targets}")
 
@@ -1081,6 +1188,7 @@ async def gobusterAgentNode(state: orchestratorState):
             logData(
                 "================================ GOBUSTER AGENT stop ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="GOBUSTER AGENT stop")
 
             agent_output = result.get("agent_output")
 
@@ -1139,6 +1247,7 @@ async def sqlmapAgentNode(state: orchestratorState):
             logData(
                 "================================ SQLMAP AGENT start ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="SQLMAP AGENT start")
 
             result = await SQLMAP_GRAPH.ainvoke(
                 {
@@ -1151,6 +1260,7 @@ async def sqlmapAgentNode(state: orchestratorState):
             logData(
                 "================================ SQLMAP AGENT stop ================================"
             )
+            logReasoning(agentName=AGENT_NAME, reasoning="SQLMAP AGENT stop")
 
             agent_output = result.get("agent_output")
 
@@ -1290,9 +1400,9 @@ async def evaluateNode(state: orchestratorState):
         {interpretationRules}
         
         Return JSON:
+        - reasoning: (Short explanation for this decision)
         - decision: (success, retry, expand, replan)
         - confidence: (0.0 - 1.0)
-        - reasoning: (Short explanation why this decision)
         """
 
     result = None
@@ -1305,6 +1415,10 @@ async def evaluateNode(state: orchestratorState):
         result = resultFull["parsed"]
         resultRaw = resultFull["raw"]
 
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[EVALUATE] {result.reasoning}",
+        )
         logMetadata(agent_name=AGENT_NAME, metadata=resultRaw.response_metadata)
 
         state.evaluate = result
@@ -1323,6 +1437,10 @@ async def evaluateNode(state: orchestratorState):
                 state.completed_tasks = []
 
             logData(f"[EVALUATE NODE] -> task {taskID} marked as COMPLETED")
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[EVALUATE] Task {taskID} marked as COMPLETED.",
+            )
             state.completed_tasks.append(finishedTask)
 
     if result.decision == "retry":
@@ -1333,6 +1451,11 @@ async def evaluateNode(state: orchestratorState):
             logData(
                 f"[EVALUATE NODE] -> max retires reached for task {taskID} -> forcing REPLAN"
             )
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[EVALUATE] Max retires reached for task {taskID}, forcing REPLAN.",
+            )
+
         else:
             logData(f"[EVALUATE NODE] -> task {taskID} retry count: {task.retry_count}")
 
@@ -1436,6 +1559,8 @@ async def outputNode(state: orchestratorState):
         - Highlight any discovered vulnerabilities.
         - Keep the report concise but informative.
         - Write the report as if it will be read by a security engineer.
+        
+        NO MARKDOWN, NO EMOJIS!
         """
 
     else:
@@ -1458,6 +1583,8 @@ async def outputNode(state: orchestratorState):
         - Describe where the failure occurred.
         - Provide a possible reason for the failure.
         - Suggest what could be done to fix or improve the process.
+        
+        NO MARKDOWN, NO EMOJIS!
         """
 
     response = await llm.ainvoke(prompt)
@@ -1465,6 +1592,11 @@ async def outputNode(state: orchestratorState):
     logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
 
     state.output_summary = response.content
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f" {20 * "="} ORCHESTRATOR SUMMARY {20 * "="} ",
+    )
+    logReasoning(agentName=AGENT_NAME, reasoning=f"[SUMMARY] {response.content}")
 
     return {
         "output_summary": state.output_summary,

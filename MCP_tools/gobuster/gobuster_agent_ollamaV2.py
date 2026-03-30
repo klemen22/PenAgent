@@ -17,6 +17,7 @@ from MCP_tools.gobuster.gobuster_toolV2 import gobuster_scan, gobusterInput
 from MCP_tools.gobuster.crawler import main as crawlerMain
 from Orchestrator.memory.agent_output import AgentOutput, attackVector
 from metadata.metadata_logger import setupMetadataLogger, logMetadata, logTotalTokens
+from reasoning.reasoning_logger import setupReasoningLogger, logReasoning
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -34,6 +35,7 @@ llm = ChatOllama(
     base_url=LM_API,
     temperature=0.1,
     format=None,
+    system="You are a specialized cybersecurity assistant. You MUST always respond in English. Do not use any other languages under any circumstances.",
 )
 
 finalAgent = llm.bind_tools([gobuster_scan])
@@ -51,6 +53,12 @@ with open("MCP_tools/gobuster/gobuster_allowed_arguments.json") as f:
 
 print(json.dumps(ALLOWED_ARGS, indent=2))
 setupMetadataLogger(AGENT_NAME)
+setupReasoningLogger(AGENT_NAME)
+
+logReasoning(
+    agentName=AGENT_NAME,
+    reasoning=f" {20 * "="} GOBUSTER REASONING {20 * "="} ",
+)
 
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
@@ -145,6 +153,10 @@ async def planningNode(state: gobusterAgentState):
 
         state.target = list(all_targets)
         logData(f"[PLANNING NODE] -> Initial targets found: {state.target}")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] Initial targets found: {state.target}.",
+        )
 
     state.iteration += 1
     # check itterations
@@ -152,6 +164,10 @@ async def planningNode(state: gobusterAgentState):
         state.fail_reason = f"Max number of iterations reached (number of iterations: {state.iteration})"
         logData(
             message="[PLANNING NODE] -> maximum number of iterations reached -> moving to output node"
+        )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] Maximum number of iterations reached, moving to output node.",
         )
 
         return {
@@ -164,6 +180,10 @@ async def planningNode(state: gobusterAgentState):
 
     if state.target_index >= len(state.target):
         logData("[PLANNING NODE] -> all targets done, moving to crawler...")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] All targets done, moving to crawler.",
+        )
         return {
             "decision": "crawler",
             "target_index": state.target_index,
@@ -175,11 +195,19 @@ async def planningNode(state: gobusterAgentState):
         logData(
             f"[PLANNING NODE] -> first agent run, initializing target: {current_target}"
         )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] Initializing target: {current_target}.",
+        )
         state.feedback.feedback = None
         state.error_detected = False
     elif state.memory.scans_performed[-1]["url"] != current_target:
         logData(
             f"[PLANNING NODE] -> new target detected: {current_target}, resetting feedback for fresh start."
+        )
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[PLANNING] Initializing target: {current_target}.",
         )
         state.feedback.feedback = None
         state.error_detected = False
@@ -200,6 +228,8 @@ async def planningNode(state: gobusterAgentState):
 
     logData(f"[PLANNING NODE] -> memory summary retrieved: {memory_summary}")
     logData("[PLANNING NODE] -> start planning...")
+
+    print(f"FEEDBACK: {state.feedback.feedback}")
 
     if state.feedback.feedback is not None:
 
@@ -372,6 +402,10 @@ async def planningNode(state: gobusterAgentState):
             logData(message=f"[PLANNING NODE] -> created next tool call: {outputPlan}")
             state.tool_call = outputPlan
             logMetadata(agent_name=AGENT_NAME, metadata=outputRaw.response_metadata)
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[PLANNING] {outputPlan.reasoning}",
+            )
 
             logData(message="[PLANNING NODE] -> exit node")
             return {
@@ -526,10 +560,10 @@ async def evaluateNode(state: gobusterAgentState):
     ][-15:]
     memory_summary = f"""
         - Current Target: {currentTarget}
-        - Scans performed on this target: {len([s for s in memory.scans_performed if s['url'] == currentTarget])}
+        - Scans performed on this target: {len([s for s in memory.scans_performed if s['url'] == currentTarget])}/5
         - Endpoints found for this target: {len([e for e in memory.endpoints if e.base_url == currentTarget])}
         - Recent paths: {recent_endpoints}
-        - Key signals: {memory.signals}
+        - Key signals: {list(set(memory.signals))}
         """
 
     if state.error_detected:
@@ -551,13 +585,15 @@ async def evaluateNode(state: gobusterAgentState):
             > Assign a confidence factor between 0.0 and 1.0 for the current situation.
             > Decide a feedback flag: "continue" or "error"
                 * "continue" -> this flag should be prioritized as completing the job takes priority so you should prefer retrying.
-                * "error" -> flag should be used in case the error is to sever to continue (try to avoid this flag).
+                * "error" -> flag should be used in case the error is too severe to continue.
             > Give your reasoning for your decisions.
         
-        Return a valid JSON:
-        - reasoning
-        - confidence
-        - feedback
+        Return ONLY valid JSON exactly in this format:
+        {{
+            "reasoning": "<Your explanation here>",
+            "confidence": 0.5,
+            "feedback": "<continue OR error>"
+        }}
         """
     else:
         prompt = f"""
@@ -575,29 +611,50 @@ async def evaluateNode(state: gobusterAgentState):
                 * "continue" -> this flag should be used if additional scans are needed for the current situation.
                 * "done" -> if all relevant information was collected.
             > Give your reasoning for your decisions.
+            > AFTER 5 SCANS ON THE SAME TARGET YOU MUST RETURN FLAG "done".
                 
-        Return a valid JSON:
-        - reasoning
-        - confidence
-        - feedback
+        Return ONLY valid JSON exactly in this format:
+        {{
+            "reasoning": "<Your detailed reasoning here>",
+            "confidence": 0.8,
+            "feedback": "<continue OR done>"
+        }}
         """
 
     feedbackFull = await llm.with_structured_output(
         toolFeedback, include_raw=True
     ).ainvoke(prompt)
 
-    feedback = feedbackFull["parsed"]
-    feedbackRaw = feedbackFull["raw"]
+    if feedbackFull["parsed"] is None:
+        logData(
+            "[EVALUATE NODE] -> Warning: LLM returned invalid JSON structure, forcing 'continue'"
+        )
+        feedback = toolFeedback(
+            reasoning="Forced continue due to parsing error",
+            confidence=0.5,
+            feedback="continue",
+        )
+        feedbackRaw = feedbackFull["raw"]
+    else:
+        feedback = feedbackFull["parsed"]
+        feedbackRaw = feedbackFull["raw"]
 
+    if feedback.feedback:
+        feedback.feedback = feedback.feedback.lower()
+
+    if len([s for s in memory.scans_performed if s["url"] == currentTarget]) >= 5:
+        feedback.feedback = "done"
+
+    logReasoning(agentName=AGENT_NAME, reasoning=feedback.reasoning)
     logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
     state.feedback = feedback
 
     if feedback.feedback == "error":
-
         logData(
             f"[EVALUATE NODE] -> Critical error on {currentTarget}. Skipping to next."
         )
         return {
+            "feedback": state.feedback,
             "target_index": state.target_index + 1,
             "decision": "continue",
             "error_detected": False,
@@ -608,12 +665,14 @@ async def evaluateNode(state: gobusterAgentState):
             f"[EVALUATE NODE] -> Finished with {currentTarget}. Moving to next target."
         )
         return {
+            "feedback": state.feedback,
             "target_index": state.target_index + 1,
             "decision": "continue",
             "error_detected": False,
         }
 
     return {
+        "feedback": state.feedback,
         "decision": "continue",
         "error_detected": False,
     }
@@ -625,6 +684,28 @@ async def crawlerNode(state: gobusterAgentState):
     endpoints = state.memory.endpoints
     output = state.gobuster_output
 
+    excluded = [
+        ".css",
+        ".js",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".log",
+        ".bak",
+        ".sql",
+        ".conf",
+        ".ini",
+        ".cfg",
+        ".key",
+    ]
+
     if not endpoints:
         logData("[CRAWLER NODE] -> No endpoints found to crawl. Exiting.")
         return {
@@ -632,12 +713,30 @@ async def crawlerNode(state: gobusterAgentState):
             "gobuster_output": state.gobuster_output,
         }
 
+    filteredEndpoints = []
+
+    for endpoint in endpoints:
+        path = endpoint.path.lower()
+
+        filename = path.split("/")[-1]
+        if filename.startswith("."):
+            continue
+
+        if any(path.endswith(ext) for ext in excluded):
+            continue
+
+        filteredEndpoints.append(endpoint)
+
     crawlerInput = {
-        "endpoints": [e.model_dump() for e in endpoints],
+        "endpoints": [e.model_dump() for e in filteredEndpoints],
     }
 
     logData(
-        message=f"[CRAWLER NODE] -> Processing {len(endpoints)} total endpoints from all targets."
+        message=f"[CRAWLER NODE] -> filtered {len(endpoints)} endpoints down to {len(filteredEndpoints)}"
+    )
+
+    logData(
+        message=f"[CRAWLER NODE] -> Processing {len(filteredEndpoints)} total endpoints from all targets."
     )
 
     try:
@@ -677,6 +776,8 @@ async def outputNode(state: gobusterAgentState):
         
         [TASK]
         Create a concise summary why that happened based on the above listed facts.
+        
+        NO MARKDOWN, NO EMOJIS!
         """
 
     else:
@@ -690,6 +791,8 @@ async def outputNode(state: gobusterAgentState):
         
         Crawler final result:
         {state.gobuster_output.crawler_result}
+        
+        NO MARKDOWN, NO EMOJIS!
         """
 
     logData(message="[OUTPUT NODE] -> generating summary")
@@ -698,6 +801,16 @@ async def outputNode(state: gobusterAgentState):
     state.gobuster_output.summary = response.content
     logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
     logTotalTokens(agent_name=AGENT_NAME)
+
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f" {20 * "="} GOBUSTER SUMMARY {20 * "="} ",
+    )
+
+    logReasoning(
+        agentName=AGENT_NAME,
+        reasoning=f"[SUMMARY] {response.content}",
+    )
 
     if state.fail:
         logData(message="[OUTPUT NODE] -> exit node - summary done")
@@ -1052,7 +1165,7 @@ async def agentRunner(prompt: str):
     state = gobusterAgentState()
     state.objective = prompt
 
-    result = await graph.ainvoke(state.model_dump())
+    result = await graph.ainvoke(state.model_dump(), {"recursion_limit": 1000})
 
     print(f"[FINAL RESULT]:\n\n{result}")
 

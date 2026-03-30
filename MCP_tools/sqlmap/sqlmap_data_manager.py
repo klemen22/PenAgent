@@ -71,14 +71,14 @@ async def retrieveData(targetAddress: str):
 
         return {
             "status": "success",
-            "message": "",
+            "message": "Data was successfuly retrieved!",
             "data_path": str(dataDir),
             "files": os.listdir(path=f"{dataDir}/{targetAddress}"),
         }
     except Exception as e:
         return {
             "status": "failed",
-            "message": str(e),
+            "message": str(e) if e else "None.",
         }
 
 
