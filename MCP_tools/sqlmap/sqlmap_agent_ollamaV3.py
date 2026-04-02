@@ -19,7 +19,6 @@ from reasoning.reasoning_logger import setupReasoningLogger, logReasoning
 from MCP_tools.sqlmap.sqlmap_data_manager import retrieveData, deleteHistory
 
 # TODO: check if async is really needed or if you can convert code back to sync?
-# TODO: decision check routing, planning node, add dataRetrieveNode, rework graph egdes
 
 # ------------------------------------------------------------------------------- #
 #                                  LLM setup                                      #
@@ -51,13 +50,15 @@ for log in os.listdir(logDir):
         logCount += 1
 
 with open("MCP_tools\sqlmap\sqlmap_allowed_arguments.json") as f:
-    ALLOWED_ARGS = json.read()
+    ALLOWED_ARGS = json.load(f)
 
 
 setupMetadataLogger(agent_name=AGENT_NAME)
 setupReasoningLogger(agentName=AGENT_NAME)
 
-logReasoning(agentName=AGENT_NAME, reasoning=f" {20 * "="} NMAP REASONING {20 * "="} ")
+logReasoning(
+    agentName=AGENT_NAME, reasoning=f" {20 * "="} SQLMAP REASONING {20 * "="} "
+)
 # ------------------------------------------------------------------------------- #
 #                                 Custom agent state                              #
 # ------------------------------------------------------------------------------- #
@@ -65,7 +66,7 @@ logReasoning(agentName=AGENT_NAME, reasoning=f" {20 * "="} NMAP REASONING {20 * 
 
 # ---------------- Plan ---------------- #
 class agentPlanStep(BaseModel):
-    description: str = Field(default="")
+    description: str
     method: Literal["GET", "POST"]
     params: List[str] = Field(default_factory=list)
     phase: Literal["detection", "exploitation"]
@@ -100,10 +101,10 @@ class sqlmapToolSelection(BaseModel):
 
 # ---------------- Analysis ---------------- #
 class agentFeedback(BaseModel):
+    decision: Optional[
+        Literal["conitnue", "replan", "finish_vector", "finish", "stop", "expand"]
+    ] = Field(default=None)
     reasoning: str = Field(..., description="Agent's explanation for current decision")
-    decision: Optional[Literal["conitnue", "replan", "finish_vector", "finish"]] = (
-        Field(default=None)
-    )
     confidence: float = Field(default=0.0)
 
 
@@ -149,6 +150,11 @@ class attackVectorMemory(BaseModel):
     max_replans: int = 5
     replan_flag: bool = Field(default=False)
 
+    # plan expansion
+    expand_flag: bool = Field(default=False)
+    expand_count: int = Field(default=0)
+    expand_max: int = 2
+
     done: bool = Field(default=False)
 
 
@@ -185,10 +191,50 @@ class sqlmapAgentState(BaseModel):
 # ------------------------------------------------------------------------------- #
 #                                 Agent nodes                                     #
 # ------------------------------------------------------------------------------- #
+async def initNode(state: sqlmapAgentState):
+    logData(message="[INIT NODE] -> enter node")
+
+    if not state.attack_vectors:
+        logData(
+            message="[INIT NODE] -> error no attack vectors were given to the agent, stopping..."
+        )
+        state.fail_reason = "No attack vectors were given to the agent!"
+
+        logData(message="[INIT NODE] -> exit node")
+        return {
+            "fail": True,
+            "fail_reason": state.fail_reason,
+            "decision": "stop",
+        }
+
+    hostnames = set()
+
+    for vector in state.attack_vectors:
+        endpoint = vector.get("endpoint", "")
+        logData(message=f"[INIT NODE] -> parsing: {endpoint}")
+
+        if endpoint:
+            try:
+                parsed = urlparse(endpoint)
+                if parsed.hostname:
+                    hostnames.add(parsed.hostname)
+
+            except Exception as e:
+                logData(
+                    message=f"[INIT NODE] -> error parsing endpoint {endpoint}: {str(e) if e else "None"}"
+                )
+    state.targets = list(hostnames)
+    logData(message=f"[INIT NODE] -> targets successfuly extracted: {state.targets}")
+
+    logData(message="[INIT NODE] -> exit node")
+    return {
+        "targets": state.targets,
+        "decision": "continue",
+    }
 
 
 async def planningNode(state: sqlmapAgentState):
-    logData(state=state, message=f"[PLANNING NODE] -> enter node")
+    logData(message=f"[PLANNING NODE] -> enter node")
 
     if not state.vectors_memory:
         for vector in state.attack_vectors:
@@ -200,15 +246,19 @@ async def planningNode(state: sqlmapAgentState):
             message=f"[PLANNING NODE] -> all attack vectors were tested, stopping..."
         )
         return {
-            "decision": "stop",
+            "decision": "data",
             "done": True,
         }
 
     currentMemory = getCurrentVector(state=state)
 
-    if currentMemory.plan and not currentMemory.replan_flag:
+    if (
+        currentMemory.plan
+        and not currentMemory.replan_flag
+        and not currentMemory.expand_flag
+    ):
         logData(
-            state=state, message=f"[PLANNING NODE] -> exit node (all vectors are done)"
+            message=f"[PLANNING NODE] -> exit node (we already have a plan)",
         )
         return {
             "decision": "continue",
@@ -216,58 +266,122 @@ async def planningNode(state: sqlmapAgentState):
 
     logData(message="[PLANNING NODE] -> planning...")
 
-    additionalPrompt = ""
+    if currentMemory.expand_flag:
+        logData(message="[PLANNING NODE] -> performing plan expansion,...")
+        history = "\n".join(
+            [f"- {s.phase}: {s.description}" for s in currentMemory.plan]
+        )
 
-    if currentMemory.replan_flag:
-        additionalPrompt = f"""
-        [WARNING]
-        You must replan your actions for endpoint: {currentMemory.vector_data['endpoint']}
-        Replan reason: {currentMemory.replan_reason}
-        Last tool output: {currentMemory.last_tool_output}
-        Previous feedback: {currentMemory.feedback.reasoning if currentMemory.feedback else "None"}        
+        prompt = f"""
+        You are an autonomous SQL injection agent in EXPANSION mode.
+        Vulnerability is CONFIRMED, but the global objective is not yet reached.
+        
+        Objective: {state.objective}
+        Endpoint: {currentMemory.vector_data['endpoint']}
+        
+        HISTORY OF COMPLETED STEPS:
+        {history}
+        
+        LAST FINDINGS:
+        {currentMemory.analysis.analysis if currentMemory.analysis else "Vulnerability confirmed."}
+        
+        TASK:
+        Generate 1 to 3 ADDITIONAL 'exploitation' steps to continue the attack.
+        Focus on extracting specific data (dumping tables, users, or passwords) based on your findings.
+        
+        STRICT RULES:
+        1. ALL new steps MUST be phase: 'exploitation'.
+        2. 'params': MUST be ONLY: {currentMemory.vector_data['params']}.
+        3. Be specific in descriptions (e.g., "Dump users table from database 'users_db'").
+
+        Return valid JSON:
+        {{
+            "reasoning": "why more steps are needed and what you aim to extract",
+            "steps": [
+                {{
+                    "description": "new exploitation step",
+                    "method": "{currentMemory.vector_data['method']}",
+                    "params": {currentMemory.vector_data['params']},
+                    "phase": "exploitation"
+                }}
+            ]
+        }}
         """
 
-    prompt = f"""
-    You are an autonomous SQL injection agent.
-    Objective: {state.objective}
-    
+    elif currentMemory.replan_flag:
+        logData(message="[PLANNING NODE] -> performing replan,...")
 
-    Attack vector:
-    Endpoint: {currentMemory.vector_data['endpoint']}
-    Method: {currentMemory.vector_data['method']}
-    Parameters: {currentMemory.vector_data['params']}
-    
-    Create a strategic scan plan. 
-    You MUST always include:
-    1. Detection phase (verify if vulnerable)
-    2. Exploitation phase (extract data if vulnerable)
+        prompt = f"""
+        You are an autonomous SQL injection agent in REPLAN mode.
+        The previous plan failed to confirm or exploit the vulnerability.
+        
+        Objective: {state.objective}
+        Endpoint: {currentMemory.vector_data['endpoint']}
+        
+        LAST ANALYSIS:
+        {currentMemory.analysis.analysis if currentMemory.analysis else "No analysis available."}
+        
+        TASK:
+        Create a NEW strategic plan with a different approach. 
+        Consider using higher 'level'/'risk' or suggesting 'tamper' scripts in your reasoning.
+        The plan must still have at least one 'detection' and one 'exploitation' step.
 
-    STRICT RULES:
-    1. Do NOT construct URLs.
-    2. Do NOT include parameter values.
-    3. Only specify parameter NAMES to test.
-    4. Do NOT include SQL payloads.
-    5. SQLMap performs injection automatically.
-    
-    IMPORTANT:
-    You are working on ONLY this single endpoint.
-    Do NOT consider any other endpoints.
-    Do NOT reference other attack vectors.
+        STRICT RULES:
+        1. 'params': MUST be ONLY: {currentMemory.vector_data['params']}.
+        2. Do NOT repeat the exact same failed strategy.
+        
+        Return valid JSON:
+        {{
+            "reasoning": "why the previous plan failed and what you are changing",
+            "steps": [
+                {{
+                    "description": "step description",
+                    "method": "{currentMemory.vector_data['method']}",
+                    "params": {currentMemory.vector_data['params']},
+                    "phase": "detection/exploitation"
+                }}
+            ]
+        }}   
+        """
+    else:
+        logData(
+            message="[PLANNING NODE] -> generating initial plan for current attack vector,..."
+        )
 
-    Return JSON:
-    - reasoning
-    - steps: list of
-        - description
-        - target_url
-        - method
-        - params
-        - phase
-    
-    Return ONLY valid JSON matching the schema.
-    """
+        prompt = f"""
+        You are an autonomous SQL injection agent.
+        Objective: {state.objective}
+        
+        Attack vector:
+        Endpoint: {currentMemory.vector_data['endpoint']}
+        Method: {currentMemory.vector_data['method']}
+        Parameters to test: {currentMemory.vector_data['params']}
+        
+        Create a strategic scan plan. 
+        You MUST include AT LEAST 2 steps:
+        1. A 'detection' phase step: Use SQLMap to confirm if the parameter is vulnerable.
+        2. An 'exploitation' phase step: If confirmed, perform initial enumeration (e.g., fetch current database name or banner).
+        
+        You can include up to 4 steps if you think initial enumeration requires separate actions.
 
-    finalPrompt = additionalPrompt + prompt
-
+        STRICT RULES:
+        1. 'params': This MUST be a list containing ONLY the exact parameter names: {currentMemory.vector_data['params']}.
+        2. 'phase': First step MUST be 'detection', others MUST be 'exploitation'.
+        3. Do NOT invent new parameters or dummy values.
+        
+        Return valid JSON:
+        {{
+            "reasoning": "your reasoning for the initial strategy",
+            "steps": [
+                {{
+                    "description": "step description",
+                    "method": "{currentMemory.vector_data['method']}",
+                    "params": ["param1"],
+                    "phase": "detection/exploitation"
+                }}
+            ]
+        }}
+        """
     retries = 3
 
     for attempt in range(retries):
@@ -275,30 +389,56 @@ async def planningNode(state: sqlmapAgentState):
         try:
             outputPlanFull = await llm.with_structured_output(
                 agentPlanOutput, include_raw=True
-            ).ainvoke(finalPrompt)
+            ).ainvoke(prompt)
 
             outputPlan = outputPlanFull["parsed"]
             outputPlanRaw = outputPlanFull["raw"]
 
-            logData(
-                message=f"[PLANNING NODE] -> created following plan:{outputPlan.reasoning}",
-            )
-            logMetadata(agent_name=AGENT_NAME, metadata=outputPlanRaw.response_metadata)
+            if currentMemory.expand_flag:
+                currentMemory.expand_flag = False
+                currentMemory.plan.extend(outputPlan.steps)
+                logData(
+                    message=f"[PLANNING NODE] -> appended following additional plan steps: {outputPlan.steps}"
+                )
+                logData(
+                    message=f"[PLANNING NODE] -> reasoning behind additional steps: {outputPlan.reasoning}"
+                )
+                return {
+                    "vectors_memory": state.vectors_memory,
+                    "decision": "continue",
+                }
 
-            currentMemory.plan = outputPlan.steps
-            currentMemory.step_index = 0
-            logData(state=state, message=f"[PLANNING NODE] -> exit node")
-            return {
-                "vectors_memory": state.vectors_memory,
-                "decision": "continue",
-                "target": state.target,
-            }
+            elif len(outputPlan.steps) >= 2:
+                logData(
+                    message=f"[PLANNING NODE] -> created following plan:{outputPlan.steps}",
+                )
+                logData(
+                    message=f"[PLANNING NODE] -> reasoning behind set plan: {outputPlan.reasoning}"
+                )
+                logMetadata(
+                    agent_name=AGENT_NAME, metadata=outputPlanRaw.response_metadata
+                )
+
+                currentMemory.replan_flag = False
+                currentMemory.plan = outputPlan.steps
+                currentMemory.step_index = 0
+                logData(message=f"[PLANNING NODE] -> exit node")
+                return {
+                    "vectors_memory": state.vectors_memory,
+                    "decision": "continue",
+                }
+
+            else:
+                logData(
+                    message=f"[PLANNING NODE]: Generated plan with less than 2 steps, trying again..."
+                )
+                prompt += "\n\n[WARNING]: Plan was generated with less than 2 steps. Try again and make sure you create at least 2 STEP plan with: 'detection' and 'explotation' phase!"
 
         except Exception as e:
 
             logData(message=f"[PLANNING NODE] -> planning attempt failed: {str(e)}")
 
-            prompt += "\n\nWARNING: Your previous output was not valid JSON. Return ONLY raw JSON. No explanations."
+            prompt += "\n\n[WARNING]: Your previous output was not valid JSON. Return ONLY raw JSON. No explanations."
 
     logData(message="[PLANNING NODE] -> planning failed, moving to output node")
 
@@ -306,18 +446,17 @@ async def planningNode(state: sqlmapAgentState):
     currentMemory.step_index = 0
     state.fail_reason = f"Planning failed after {attempt} attempts.\nLast recieved error: {str(e) if e else "None."} "
 
-    logData(state=state, message=f"[PLANNING NODE] -> exit node")
+    logData(message=f"[PLANNING NODE] -> exit node")
     return {
         "vectors_memory": state.vectors_memory,
         "decision": "stop",
-        "target": state.target,
         "fail": True,
         "fail_reason": state.fail_reason,
     }
 
 
 async def selectActionNode(state: sqlmapAgentState):
-    logData(state=state, message=f"[SELECT ACTION NODE] -> enter node")
+    logData(message=f"[SELECT ACTION NODE] -> enter node")
 
     currentMemory = getCurrentVector(state=state)
 
@@ -360,7 +499,7 @@ async def selectActionNode(state: sqlmapAgentState):
     Parameters under test: {step.params}
 
     Previous analysis:
-    {currentMemory.analysis.reasoning if currentMemory.analysis else "None"}
+    {currentMemory.analysis.analysis if currentMemory.analysis else "None"}
 
     Available sqlmap options:
     {ALLOWED_ARGS}
@@ -426,10 +565,9 @@ async def selectActionNode(state: sqlmapAgentState):
             selectionRaw = selectionFull["raw"]
 
             logData(
-                state,
                 message=f"[SELECT ACTION NODE] -> reasoning: {selection.reasoning}",
             )
-            logData(state=state, message=f"[SELECT ACTION NODE -> exit node]")
+            logData(message=f"[SELECT ACTION NODE -> exit node]")
             logMetadata(agent_name=AGENT_NAME, metadata=selectionRaw.response_metadata)
 
             currentMemory.selected_command = selection
@@ -442,7 +580,7 @@ async def selectActionNode(state: sqlmapAgentState):
             logData(
                 message=f"[SELECT TOOL CALL] -> failed creating tool call: {str(e)}"
             )
-            prompt += f"\n\nWARNING: Your previous output produced an exception probably due to invalid JSON output.\nException recieved:{str(e) if e else "None"}"
+            finalPrompt += f"\n\nWARNING: Your previous output produced an exception probably due to invalid JSON output.\nException recieved:{str(e) if e else "None"}"
 
     state.fail_reason = f"""
     Planning failed after {attempt} attempts
@@ -463,7 +601,7 @@ async def selectActionNode(state: sqlmapAgentState):
 
 async def toolExecutionNode(state: sqlmapAgentState):
     print("\n[EXECUTE TOOL]\n")
-    logData(state=state, message="[EXECUTE TOOL] -> enter node")
+    logData(message="[EXECUTE TOOL] -> enter node")
     currentMemory = getCurrentVector(state=state)
 
     if not currentMemory.selected_command:
@@ -533,7 +671,7 @@ async def toolExecutionNode(state: sqlmapAgentState):
         tool_payload["data"] = ""
 
     print(f"\n[TOOL PAYLOAD]\n{tool_payload}")
-    logData(state, f"[TOOL PAYLOAD]: {str(tool_payload)}")
+    logData(f"[TOOL PAYLOAD]: {str(tool_payload)}")
 
     try:
         currentMemory.last_tool_result = await sqlmap_scan(
@@ -555,7 +693,7 @@ async def toolExecutionNode(state: sqlmapAgentState):
             "decision": "evaluate",
         }
 
-    logData(state=state, message="[EXECUTE TOOL] -> exit node")
+    logData(message="[EXECUTE TOOL] -> exit node")
     return {
         "vectors_memory": state.vectors_memory,
         "decision": "continue",
@@ -563,7 +701,7 @@ async def toolExecutionNode(state: sqlmapAgentState):
 
 
 async def analyzeNode(state: sqlmapAgentState):
-    logData(state=state, message="[ANALYZE NODE] -> enter node")
+    logData(message="[ANALYZE NODE] -> enter node")
 
     currentMemory = getCurrentVector(state=state)
     toolResult = currentMemory.last_tool_result
@@ -649,6 +787,9 @@ async def evaluateNode(state: sqlmapAgentState):
     currentMemory = getCurrentVector(state=state)
     plan = currentMemory.plan[currentMemory.step_index] if currentMemory.plan else None
 
+    totalSteps = len(currentMemory.plan) if currentMemory.plan else 0
+    currentStep = currentMemory.step_index + 1
+
     if state.fail:
         additionalPrompt = f"""
         [WARNING]
@@ -674,25 +815,35 @@ async def evaluateNode(state: sqlmapAgentState):
 
     prompt = f"""
     Objective: {state.objective}
-    Current vector: {currentMemory}
+    Current vector: {currentMemory.vector_data['endpoint']}
     Current phase: {plan.phase if plan else "unknown"}
     
     [ANALYSIS]
     {analysisPrompt}
     
     [PLAN STATUS]
-    - current step: {currentMemory.step_index + 1} of {len(currentMemory.plan) if currentMemory.plan else 0}
+    - current step: {currentStep} of {totalSteps}
     - replan count: {currentMemory.replan_count} / {currentMemory.max_replans}
+    - expand count: {currentMemory.expand_count} / {currentMemory.expand_max}
     
-    DECISION RULES:
-    1. 'finish': If objective "{state.objective}" is fully achieved (e.g. data dumped).
-    2. 'finish_vector': If this vector is confirmed NOT vulnerable after multiple steps, or we are done with it.
-    3. 'replan': If the current plan isn't working (low confidence or error) but you think another approach (tamper script, higher level) might work.
-    4. 'continue': If vulnerability is found and we need to proceed to exploitation, or if we need to finish the current plan steps.
+    STRICT DECISION RULES (Read Carefully):
+    1. 'continue': 
+        - If you are on step {currentStep} of {totalSteps} and there are more steps remaining, you MUST select 'continue'.
+        - If vulnerability is found in the 'detection' phase, you MUST select 'continue' to move to 'exploitation'.
+    2. 'expand': If you are on the LAST step ({totalSteps} of {totalSteps}), the vulnerability IS confirmed, but you need MORE steps (like dumping specific tables or data) to fully achieve the global objective.
+    3. 'finish_vector': 
+        - ONLY select this if you are on the LAST step ({totalSteps} of {totalSteps}).
+        - OR if you have reached maximum number of replans ({currentMemory.max_replans} of {currentMemory.max_replans}).
+        - OR if you have reached maximum number of plan expansion ({currentMemory.expand_max} of {currentMemory.expand_max}).
+        - OR if the vector is confirmed NOT vulnerable after multiple attempts.
+        - NEVER select this if you are still on step 1 and vulnerability was found!
+    4. 'replan': If the current plan isn't working (low confidence or errors) but another approach (tamper scripts, higher level/risk) might work.
+    5. 'finish': If the global objective "{state.objective}" is fully achieved across all vectors.
+    6. 'stop': Emergency exit only for critical unrecoverable agent errors.
     
     Return valid JSON:
-    - reasoning <your reasoning for your decision and confidence value>
-    - decision <one of [continue, replan, finish_vector, finish]>
+    - decision <ONE of ["conitnue", "replan", "finish_vector", "finish", "stop", "expand"]>
+    - reasoning <your reasoning for your decision>
     - confidence <number between 0.0 - 1.0>
     """
 
@@ -709,12 +860,67 @@ async def evaluateNode(state: sqlmapAgentState):
         currentMemory.feedback = feedback
         decision = feedback.decision
 
+        # decision override
+        if decision == "finish_vector" and currentStep < totalSteps:
+            if currentMemory.analysis and currentMemory.analysis.vulnerability_found:
+                logData(
+                    message="[EVALUATE NODE] -> OVERRIDE: llm tried to finish attack vector early without explotation phase!"
+                )
+                decision = "continue"
+
+        logData(message=f"[EVALUATE NODE] -> evaluation done (decision: {decision})")
+        logReasoning(
+            agentName=AGENT_NAME,
+            reasoning=f"[EVALUATE] Decision: {decision}. Reason: {feedback.reasoning}",
+        )
+        logMetadata(agent_name=AGENT_NAME, metadata=feedbackRaw.response_metadata)
+
+        if decision == "expand":
+            currentMemory.expand_count += 1
+            if currentMemory.expand_count >= currentMemory.expand_max:
+                logData(
+                    "[EVALUATE NODE] -> maximum number of expansions reached, moving to next vector..."
+                )
+                state.vector_index += 1
+                currentMemory.done = True
+
+                return {
+                    "iteration": state.iteration,
+                    "decision": "plan",
+                    "vector_index": state.vector_index,
+                    "vectors_memory": state.vectors_memory,
+                }
+            else:
+                currentMemory.expand_flag = True
+                logData(
+                    message="[EVALUATE NODE] -> objective not done yet, plan expansion is needed"
+                )
+                return {
+                    "decision": "plan",
+                    "vectors_memory": state.vectors_memory,
+                    "iteration": state.iteration,
+                }
+
+        if decision == "stop":
+            logData(
+                message="[EVALUATE NODE] -> agent encountered a critical error, moving to output node..."
+            )
+            state.fail_reason += f"\nProcess was forcefully stopped by evlaute agent with following reasoning: {feedback.reasoning}"
+
+            logData(message="[EVALUATE NODE] -> exit node")
+            return {
+                "fail": True,
+                "fail_reason": state.fail_reason,
+                "decision": "stop",
+                "vectors_memory": state.vectors_memory,
+            }
+
         if decision == "finish_vector":
             state.vector_index += 1
             currentMemory.done = True
 
             logData(
-                message="[EVLUATE NODE] -> attack vector finished, moving to planning node..."
+                message="[EVALUATE NODE] -> attack vector finished, moving to planning node..."
             )
             logData(message="[EVALUATE NODE] -> exit node")
             return {
@@ -726,30 +932,40 @@ async def evaluateNode(state: sqlmapAgentState):
 
         if decision == "replan":
             currentMemory.replan_count += 1
-            currentMemory.replan_flag = True
 
             if state.fail:
                 state.fail = False
                 state.fail_reason = None
                 logData(
-                    message="[EVLUATE NODE] -> current plan was not successful, moving to planning node..."
+                    message="[EVALUATE NODE] -> current plan was not successful, moving to planning node..."
                 )
 
             if currentMemory.replan_count >= currentMemory.max_replans:
                 state.vector_index += 1
+                currentMemory.done = True
                 logData(
                     message="[EVALUATE NODE] -> max. number of replans reached moving to next vector..."
                 )
 
-            logData(message="[EVALUATE NODE] -> exit node")
-            return {
-                "iteration": state.iteration,
-                "vector_index": state.vector_index,
-                "decision": "plan",
-                "vectors_memory": state.vectors_memory,
-                "fail": state.fail,
-                "fail_reason": state.fail_reason,
-            }
+                logData(message="[EVALUATE NODE] -> exit node")
+                return {
+                    "vector_index": state.vector_index,
+                    "decision": "plan",
+                    "vectors_memory": state.vectors_memory,
+                    "fail": state.fail,
+                    "fail_reason": state.fail_reason,
+                }
+
+            else:
+                currentMemory.replan_flag = True
+
+                logData(message="[EVALUATE NODE] -> exit node")
+                return {
+                    "decision": "plan",
+                    "vectors_memory": state.vectors_memory,
+                    "fail": state.fail,
+                    "fail_reason": state.fail_reason,
+                }
 
         if decision == "finish":
 
@@ -763,7 +979,7 @@ async def evaluateNode(state: sqlmapAgentState):
             return {
                 "iteration": state.iteration,
                 "vectors_memory": state.vectors_memory,
-                "decision": "stop",
+                "decision": "data",
                 "done": state.done,
             }
 
@@ -808,17 +1024,17 @@ async def dataRetrieveNode(state: sqlmapAgentState):
     for target in targets:
 
         try:
-            result = retrieveData()
+            result = retrieveData(targetAddress=target)
             logData(
                 message=f"[DATA RETRIEVE NODE] -> data retrieval for target {target} was successful"
             )
             state.retrieved_data.append(
                 retrievedData(
                     target=target,
-                    status=result.status,
-                    message=result.message,
-                    data_path=result.data_path,
-                    files=result.files,
+                    status=result["status"],
+                    message=result["message"],
+                    data_path=result["data_path"],
+                    files=result["files"],
                 )
             )
             # clear retrieved data from MCP server
@@ -843,7 +1059,7 @@ async def dataRetrieveNode(state: sqlmapAgentState):
 
 
 async def outputNode(state: sqlmapAgentState):
-    logData(state=state, message="[OUTPUT NODE] -> enter node")
+    logData(message="[OUTPUT NODE] -> enter node")
     vectors = json.dumps(
         {k: v.model_dump() for k, v in state.vectors_memory.items()}, indent=4
     )
@@ -859,6 +1075,8 @@ async def outputNode(state: sqlmapAgentState):
         {state.model_dump_json()}
         """
     else:
+        retrieved_data = state.retrieved_data
+
         prompt = f"""
         [TASK]
             
@@ -869,14 +1087,17 @@ async def outputNode(state: sqlmapAgentState):
         
         [FINAL VECTORS]
         {vectors}
+        
+        [RETRIEVED DATA]
+        {retrieved_data if retrieved_data else "None"}
         """
 
-    logData(state=state, message="[OUTPUT NODE] -> generating summary")
+    logData(message="[OUTPUT NODE] -> generating summary")
     response = await llm.ainvoke(prompt)
     state.summary = response.content
 
     logMetadata(agent_name=AGENT_NAME, metadata=response.response_metadata)
-    logData(state=state, message="[OUTPUT NODE] -> exit node - summary done")
+    logData(message="[OUTPUT NODE] -> exit node - summary done")
     logTotalTokens(agent_name=AGENT_NAME)
 
     if state.fail:
@@ -903,64 +1124,6 @@ async def outputNode(state: sqlmapAgentState):
 # ------------------------------------------------------------------------------- #
 #                                 Helper fucntion                                 #
 # ------------------------------------------------------------------------------- #
-def sqlmapOutputParser(toolOutput):
-
-    stdout = ""
-    keywords = [
-        "parameter",
-        "injectable",
-        "dbms",
-        "warning",
-        "critical",
-        "all tested parameters",
-        "appears",
-        "does not",
-    ]
-
-    filteredOutput = []
-
-    if isinstance(toolOutput, tuple):
-        result = toolOutput[1].get("result", {})
-        stdout = result.get("stdout", "")
-
-    elif isinstance(toolOutput, dict):
-        stdout = toolOutput.get("stdout", "")
-
-    if stdout != "":
-        lines = stdout.splitlines()
-
-        for line in lines:
-            for keyword in keywords:
-                if keyword.lower() in line.lower():
-                    filteredOutput.append(line)
-
-        return "\n".join(filteredOutput)
-    else:
-        return ""
-
-
-def evaluateNodeRouting(state: sqlmapAgentState):
-    # TODO: remove this junk
-    if state.decision == "continue":
-        return "select_action"
-
-    elif state.decision == "replan":
-        return "plan"
-
-    elif state.decision == "plan":
-        return "plan"
-
-    elif state.decision == "stop":
-        return "output"
-
-    return "output"
-
-
-def planningNodeRouting(state: sqlmapAgentState):
-    if state.decision == "continue":
-        return "select_action"
-    else:
-        return "output"
 
 
 def setupLogger():
@@ -976,8 +1139,7 @@ def setupLogger():
     return logger
 
 
-def logData(state, message: str):
-    state.agent_log.append(message)
+def logData(message: str):
     logging.getLogger("sqlmap_agent_log").info(message)
 
 
@@ -1037,6 +1199,10 @@ def severityConverter(conf: float):
     return "low"
 
 
+def retrieveCurrentDecision(state: sqlmapAgentState):
+    return state.decision
+
+
 # ------------------------------------------------------------------------------- #
 #                                    Graph                                        #
 # ------------------------------------------------------------------------------- #
@@ -1050,38 +1216,66 @@ def sqlmapBuilder():
     # graph nodes
     # -------------------------------
 
+    workflow.add_node("init_node", initNode)
     workflow.add_node("planning_node", planningNode)
     workflow.add_node("select_action_node", selectActionNode)
     workflow.add_node("tool_execution_node", toolExecutionNode)
     workflow.add_node("analyze_node", analyzeNode)
     workflow.add_node("evaluate_node", evaluateNode)
     workflow.add_node("output_node", outputNode)
+    workflow.add_node("data_retrieve_node", dataRetrieveNode)
 
     # -------------------------------
     # graph edges
     # -------------------------------
 
-    workflow.add_edge(START, "planning_node")
+    workflow.add_edge(START, "init_node")
     workflow.add_conditional_edges(
-        "planning_node",
-        planningNodeRouting,
+        "init_node",
+        retrieveCurrentDecision,
         {
-            "select_action": "select_action_node",
-            "output": "output_node",
+            "continue": "planning_node",
+            "stop": "output_node",
         },
     )
-    workflow.add_edge("select_action_node", "tool_execution_node")
-    workflow.add_edge("tool_execution_node", "analyze_node")
+    workflow.add_conditional_edges(
+        "planning_node",
+        retrieveCurrentDecision,
+        {
+            "continue": "select_action_node",
+            "stop": "output_node",
+            "data": "data_retrieve_node",
+        },
+    )
+    workflow.add_conditional_edges(
+        "select_action_node",
+        retrieveCurrentDecision,
+        {
+            "continue": "tool_execution_node",
+            "plan": "planning_node",
+            "evaluate": "evaluate_node",
+        },
+    )
+    workflow.add_conditional_edges(
+        "tool_execution_node",
+        retrieveCurrentDecision,
+        {
+            "continue": "analyze_node",
+            "evaluate": "evaluate_node",
+        },
+    )
     workflow.add_edge("analyze_node", "evaluate_node")
     workflow.add_conditional_edges(
         "evaluate_node",
-        evaluateNodeRouting,
+        retrieveCurrentDecision,
         {
-            "select_action": "select_action_node",
+            "stop": "output_node",
+            "data": "data_retrieve_node",
             "plan": "planning_node",
-            "output": "output_node",
+            "continue": "select_action_node",
         },
     )
+    workflow.add_edge("data_retrieve_node", "output_node")
     workflow.add_edge("output_node", END)
 
     # checkpointer = InMemorySaver()
@@ -1106,7 +1300,7 @@ async def agentRunner(prompt: str, endpoints):
 
     result = await graph.ainvoke(state.model_dump(), {"recursion_limit": 1000})
 
-    print(f"[FINAL RESULT]:\n\n{result}")
+    print(f"[FINAL RESULT]:\n\n{result.get("agent_output")}")
 
 
 # ------------------------------------------------------------------------------- #
@@ -1121,5 +1315,7 @@ if __name__ == "__main__":
         endpoints = json.load(f)
 
     result = asyncio.run(
-        agentRunner(prompt="Analyze given attack vectors.", endpoints=endpoints)
+        agentRunner(
+            prompt="Analyze and exploit  given attack vectors.", endpoints=endpoints
+        )
     )

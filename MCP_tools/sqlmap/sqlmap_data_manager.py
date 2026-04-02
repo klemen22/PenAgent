@@ -87,8 +87,8 @@ async def retrieveData(targetAddress: str):
 # ------------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
-    """
-    result = asyncio.run(retrieveData(targetAddress=TEST_ADDR))
+
+    result = asyncio.run(retrieveData(targetAddress="192.168.157.136"))
     print("\n\n[FINAL RESULT]:\n")
 
     if not result["message"]:
@@ -97,8 +97,9 @@ if __name__ == "__main__":
         print(f"> files: {result["files"]}")
     else:
         print(f"> status: {result["status"]}")
-        print(f"> message: {result["message"]}")"""
+        print(f"> message: {result["message"]}")
 
+"""
     result = asyncio.run(deleteHistory(targetAddress=TEST_ADDR))
 
     if not result["message"]:
@@ -106,3 +107,4 @@ if __name__ == "__main__":
     else:
         print(f"> status: {result["status"]}")
         print(f"> message: {result["message"]}")
+"""

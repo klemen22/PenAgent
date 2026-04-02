@@ -97,6 +97,7 @@ class toolFeedback(BaseModel):
 
 class gobusterOutput(BaseModel):
     summary: Optional[str] = Field(default=None)
+    host_enum: Dict[str, Dict] = Field(default_factory=dict)
     crawler_result: Optional[Any] = Field(default=None)
 
 
@@ -731,6 +732,8 @@ async def crawlerNode(state: gobusterAgentState):
         "endpoints": [e.model_dump() for e in filteredEndpoints],
     }
 
+    print(f"[CRAWLER INPUT]:\n\n{crawlerInput}")
+
     logData(
         message=f"[CRAWLER NODE] -> filtered {len(endpoints)} endpoints down to {len(filteredEndpoints)}"
     )
@@ -742,6 +745,7 @@ async def crawlerNode(state: gobusterAgentState):
     try:
         crawlerOutput = await crawlerMain(payload=crawlerInput)
         output.crawler_result = crawlerOutput
+        output.host_enum = crawlerInput
 
         logData(message="[CRAWLER NODE] -> Crawling successful for all targets.")
         return {
@@ -846,6 +850,7 @@ async def outputNode(state: gobusterAgentState):
                 agent_name="gobuster",
                 success=True,
                 attack_vectors=attack_vectors,
+                host_enum=state.gobuster_output.host_enum,
                 summary=state.gobuster_output.summary,
             )
         }

@@ -254,7 +254,9 @@ class orchestratorState(BaseModel):
     # cannonical knowledge
     discovered_hosts: List[str] = Field(default_factory=list)
     host_memory: Dict[str, HostMemory] = Field(default_factory=dict)
-    # host_enum: Dict[str, Dict] = Field(default_factory=dict)  # add gobuster enum output also
+    host_enum: Dict[str, Dict] = Field(
+        default_factory=dict
+    )  # add gobuster enum output also
     attack_vectors: List[attackVector] = Field(default_factory=list)
     vulnerabilities: List[vulnerability] = Field(default_factory=list)
 
@@ -586,11 +588,11 @@ async def routerNode(state: orchestratorState):
 
     elif reason.route in ["expand", "replan"]:
         logData(f"[ROUTING NODE] -> creating new plan after {reason.route}")
-        reason.route = "new"
         logReasoning(
             agentName=AGENT_NAME,
             reasoning=f"[ROUTER] Selecting new task after {reason.route}",
         )
+        reason.route = "new"
 
     else:
         reason.route = "new"
@@ -599,6 +601,7 @@ async def routerNode(state: orchestratorState):
             agentName=AGENT_NAME,
             reasoning="Selecting new task.",
         )
+    logData("[ROUTER NODE] -> exit node")
     return {
         "iteration": state.iteration,
         "reasoning": state.reasoning,
@@ -739,13 +742,19 @@ async def reasoningNode(state: orchestratorState):
 
         if reason.route in ["replan", "expand"] and not output.task_ID == None:
             output.task_ID = None
+            logData(
+                f"[REASONING NODE] -> reasoning for '{reason.route}' decision: {output.reasoning}"
+            )
 
-        logData(f"[REASONING NODE] -> selected task: {output.task_ID}")
-        logData(f"[REASONING NODE] -> reasoning for selected task: {output.reasoning}")
-        logReasoning(
-            agentName=AGENT_NAME,
-            reasoning=f"[REASONING] Task {output.task_ID} was selected.\nReasoning: {output.reasoning}",
-        )
+        else:
+            logData(f"[REASONING NODE] -> selected task: {output.task_ID}")
+            logData(
+                f"[REASONING NODE] -> reasoning for selected task: {output.reasoning}"
+            )
+            logReasoning(
+                agentName=AGENT_NAME,
+                reasoning=f"[REASONING] Task {output.task_ID} was selected.\nReasoning: {output.reasoning}",
+            )
         logMetadata(agent_name=AGENT_NAME, metadata=outputRaw.response_metadata)
         reason.reasoning = output.reasoning
 
@@ -846,7 +855,7 @@ async def planExpansionNode(state: orchestratorState):
 
         logReasoning(
             agentName=AGENT_NAME,
-            reasoning=f"[PLAN EXPANSION] New generated tasks:\n{json.dumps(output.new_tasks.model_dump(), indent=4)}",
+            reasoning=f"[PLAN EXPANSION] New generated tasks:\n{json.dumps(output.model_dump(), indent=4)}",
         )
         logReasoning(
             agentName=AGENT_NAME,
@@ -1053,6 +1062,9 @@ async def inputBuilderNode(state: orchestratorState):
                 vectors.append(vector)
 
         if vectors:
+            logData(
+                f"[INPUT BUILDER] -> successfuly prepared {len(vectors)} untested vectors"
+            )
             logData(f"[INPUT BUILDER] -> input successfuly built for {agent} agent")
             state.agent_call.agent_input.attack_vectors = vectors
 
@@ -1481,7 +1493,7 @@ async def evaluateNode(state: orchestratorState):
 async def saveToolOutputNode(state: orchestratorState):
 
     agent_output = state.agent_output
-
+    # ---------------------- nmap ---------------------- #
     if agent_output.agent_name == "nmap" and agent_output.success:
         state.discovered_hosts = list(
             set(state.discovered_hosts + agent_output.discovered_hosts)
@@ -1489,6 +1501,7 @@ async def saveToolOutputNode(state: orchestratorState):
         for ip, host in agent_output.host_memory.items():
             state.host_memory[ip] = HostMemory(**host.model_dump())
 
+    # -------------------- gobuster -------------------- #
     elif agent_output.agent_name == "gobuster" and agent_output.success:
         existing = {(v.endpoint, v.method) for v in state.attack_vectors}
 
@@ -1499,6 +1512,25 @@ async def saveToolOutputNode(state: orchestratorState):
             if key not in existing:
                 state.attack_vectors.append(vec)
 
+        for host, data in agent_output.host_enum.items():
+            if host not in state.host_enum:
+                state.host_enum[host] = data
+            else:
+                existing_endpoints = state.host_enum[host].get("endpoints", [])
+                new_endpoints = data.get("endpoints", [])
+                seen_combinations = {
+                    (ep.get("base_url"), ep.get("path")) for ep in existing_endpoints
+                }
+
+                for ep in new_endpoints:
+                    combo = (ep.get("base_url"), ep.get("path"))
+                    if combo not in seen_combinations:
+                        existing_endpoints.append(ep)
+                        seen_combinations.add(combo)
+
+                state.host_enum[host]["endpoints"] = existing_endpoints
+
+    # --------------------- sqlmap --------------------- #
     elif agent_output.agent_name == "sqlmap" and agent_output.success:
         vectors = agentCall.agent_input.additional_data or []
 
@@ -1816,7 +1848,7 @@ if __name__ == "__main__":
     2. Identify any running web services.
     3. Enumerate directories and application endpoints.
     4. Identify potential SQL injection attack vectors on discovered endpoints.
-    5. Attempt to confirm SQL injection vulnerabilities.
+    5. Confirm and exploit any SQL injection vulnerabilities.
 
     Summarize all discovered attack vectors and vulnerabilities.
     """

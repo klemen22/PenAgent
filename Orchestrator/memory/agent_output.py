@@ -72,6 +72,9 @@ class AgentOutput(BaseModel):
     discovered_hosts: List[str] = Field(default=[])
     host_memory: Dict[str, HostMemory] = Field(default={})
 
+    # gobuster
+    host_enum: Dict[str, Dict] = Field(default={})
+
     # gobuster + crawler
     attack_vectors: List[attackVector] = Field(default=[])
 
